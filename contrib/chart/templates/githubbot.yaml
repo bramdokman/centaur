@@ -99,6 +99,10 @@ spec:
             - name: GITHUBBOT_USER_ID
               value: {{ .Values.githubbot.botUserId | quote }}
 {{- end }}
+{{- if .Values.githubbot.agentLogins }}
+            - name: GITHUBBOT_AGENT_LOGINS
+              value: {{ .Values.githubbot.agentLogins | quote }}
+{{- end }}
             # githubbot's own webhook signing secret (the GitHub repo/org webhook).
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:

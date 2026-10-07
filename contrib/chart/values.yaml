@@ -812,6 +812,9 @@ githubbot:
   # Bot's numeric GitHub user id for self-message detection; empty = detect at
   # boot. For an App: `gh api users/<slug>%5Bbot%5D --jq .id`.
   botUserId: ""
+  # Comma-separated logins whose commits and reviews count as the bot's own (the
+  # account the sandbox pushes as, when it isn't the bot). Empty = the bot only.
+  agentLogins: ""
   # v2 PR self-management (only acts on PRs assigned to the bot account).
   # Merging needs contents:write, which a read-only App lacks; keep autoMerge
   # off for such an App.

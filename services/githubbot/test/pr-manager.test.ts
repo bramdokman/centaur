@@ -9,6 +9,12 @@ import {
 } from "../src/pr-manager";
 import { emitWorkflowEvent } from "../src/session-api";
 import {
+  markTurnStarted,
+  prFromSessionKey,
+  resetTurnActivity,
+  wasPrTurnActive,
+} from "../src/turn-activity";
+import {
   evaluateCi,
   fetchCiEvaluation,
   isCentaurSkipCheck,
@@ -1404,8 +1410,8 @@ describe("management turn reaction ack", () => {
   });
 });
 
-describe("CI-fix human back-off", () => {
-  function backOffCtx(input: { commitAuthor: string }) {
+describe("CI-fix human back-off with agent logins", () => {
+  function backOffCtx(input: { agentLogins?: string[]; commitAuthor: string }) {
     const state = makeState();
     const ctx = {
       octokit: {
@@ -1442,6 +1448,7 @@ describe("CI-fix human back-off", () => {
       },
       options: {
         apiUrl: "http://localhost",
+        agentLogins: input.agentLogins,
         ciFixMaxAttempts: 3,
         logger: quietLogger,
         fetch: () => Promise.resolve(new Response("no", { status: 400 })),
@@ -1468,10 +1475,172 @@ describe("CI-fix human back-off", () => {
     expect(await fixCount(state)).toBe(0);
   });
 
+  test("a commit by a configured agent login counts as the bot's own", async () => {
+    const { ctx, state } = backOffCtx({
+      agentLogins: ["teammate"],
+      commitAuthor: "Teammate",
+    });
+    await handleCiEvent(ctx, "check_run", redCheck);
+    await drainBackgroundWork(2_000);
+    expect(await fixCount(state)).toBe(1);
+  });
+
   test("the bot's own commit under its App [bot] login counts too", async () => {
     const { ctx, state } = backOffCtx({ commitAuthor: "centaur-bot[bot]" });
     await handleCiEvent(ctx, "check_run", redCheck);
     await drainBackgroundWork(2_000);
     expect(await fixCount(state)).toBe(1);
+  });
+});
+
+describe("agent-login reviews (self-review noise)", () => {
+  const review = (input: {
+    association?: string;
+    body?: string;
+    id?: number;
+    login?: string;
+    state?: string;
+    submittedAt?: string;
+    userType?: string;
+  }) =>
+    JSON.stringify({
+      action: "submitted",
+      repository: { full_name: "base/repo" },
+      pull_request: { number: 7 },
+      review: {
+        author_association: input.association ?? "MEMBER",
+        body: input.body ?? "",
+        id: input.id ?? 77,
+        node_id: `PRR_${input.id ?? 77}`,
+        state: input.state ?? "commented",
+        submitted_at: input.submittedAt,
+        user: { login: input.login ?? "teammate", type: input.userType ?? "User" },
+      },
+    });
+
+  function agentCtx(comments: { in_reply_to_id?: number }[]) {
+    const reactions: string[] = [];
+    const ctx = {
+      octokit: {
+        graphql: async (_q: string, vars: { content: string }) => {
+          reactions.push(vars.content);
+          return {};
+        },
+        rest: {
+          pulls: {
+            get: async () => ({ data: prPayload({ headRepoFullName: "base/repo" }) }),
+            listCommentsForReview: async () => ({ data: comments }),
+          },
+        },
+      },
+      options: {
+        agentLogins: ["teammate"],
+        apiUrl: "http://localhost",
+        logger: quietLogger,
+        fetch: () => Promise.resolve(new Response("no", { status: 400 })),
+      },
+      state: makeState(),
+      userName: "centaur-bot",
+    } as unknown as PrManagerContext;
+    return { ctx, reactions };
+  }
+
+  test("an agent login's reply-only review does not start an address-review turn", async () => {
+    resetTurnActivity();
+    const { ctx, reactions } = agentCtx([{ in_reply_to_id: 1 }, { in_reply_to_id: 2 }]);
+    await handleReviewEvent(ctx, review({ login: "Teammate" }));
+    await drainBackgroundWork(2_000);
+    expect(reactions).toEqual([]);
+  });
+
+  test("a full page of replies is inconclusive and still addressed", async () => {
+    resetTurnActivity();
+    const { ctx, reactions } = agentCtx(
+      Array.from({ length: 100 }, (_, i) => ({ in_reply_to_id: i + 1 })),
+    );
+    await handleReviewEvent(ctx, review({}));
+    expect(reactions).toContain("EYES");
+    await drainBackgroundWork(5_000);
+  });
+
+  test("an agent login's fresh review with a new comment is still addressed", async () => {
+    resetTurnActivity();
+    const { ctx, reactions } = agentCtx([{ in_reply_to_id: 1 }, {}]);
+    await handleReviewEvent(ctx, review({}));
+    expect(reactions).toContain("EYES");
+    await drainBackgroundWork(5_000);
+  });
+
+  test("an agent login's review with a body is addressed when no bot turn ran", async () => {
+    resetTurnActivity();
+    const { ctx, reactions } = agentCtx([{ in_reply_to_id: 1 }]);
+    await handleReviewEvent(ctx, review({ body: "please also rename foo" }));
+    expect(reactions).toContain("EYES");
+    await drainBackgroundWork(5_000);
+  });
+
+  test("an agent login's review submitted during a bot turn on the PR is skipped", async () => {
+    resetTurnActivity();
+    const end = markTurnStarted("github-manage:base/repo:7");
+    const { ctx, reactions } = agentCtx([{}]);
+    await handleReviewEvent(ctx, review({ body: "top-level agent review" }));
+    end();
+    // ...and within the grace window just after it ended.
+    await handleReviewEvent(ctx, review({ id: 78, body: "late webhook" }));
+    await drainBackgroundWork(2_000);
+    expect(reactions).toEqual([]);
+  });
+
+  test("a turn on another PR, or a non-agent reviewer, does not suppress", async () => {
+    resetTurnActivity();
+    const end = markTurnStarted("github-manage:base/repo:8");
+    const { ctx, reactions } = agentCtx([{ in_reply_to_id: 1 }]);
+    await handleReviewEvent(ctx, review({ login: "someone-else" }));
+    expect(reactions).toContain("EYES");
+    end();
+    await drainBackgroundWork(5_000);
+  });
+});
+
+describe("turn activity", () => {
+  test("maps PR session keys, not issue keys", () => {
+    expect(prFromSessionKey("github:o/r:7")).toEqual({ owner: "o", repo: "r", number: 7 });
+    expect(prFromSessionKey("github:o/r:7:rc:99")).toEqual({ owner: "o", repo: "r", number: 7 });
+    expect(prFromSessionKey("github-manage:o/r:7")).toEqual({ owner: "o", repo: "r", number: 7 });
+    expect(prFromSessionKey("github-review:o/r:7")).toEqual({ owner: "o", repo: "r", number: 7 });
+    expect(prFromSessionKey("github:o/r:issue:7")).toBeNull();
+    expect(prFromSessionKey("github-issue:o/r:7")).toBeNull();
+  });
+
+  test("a review from before a still-running turn is not attributed to it", () => {
+    resetTurnActivity();
+    const first = markTurnStarted("github:o/r:7", 1_000);
+    first(2_000);
+    markTurnStarted("github-manage:o/r:7", 10_000);
+    expect(wasPrTurnActive("o", "r", 7, 5_000, 100)).toBe(false);
+    expect(wasPrTurnActive("o", "r", 7, 1_500, 100)).toBe(true);
+    expect(wasPrTurnActive("o", "r", 7, 12_000, 100)).toBe(true);
+  });
+
+  test("overlapping turns: one ending doesn't end the other", () => {
+    resetTurnActivity();
+    const a = markTurnStarted("github:o/r:7", 1_000);
+    const b = markTurnStarted("github-manage:o/r:7", 2_000);
+    a(3_000);
+    expect(wasPrTurnActive("o", "r", 7, 50_000, 100)).toBe(true);
+    b(60_000);
+    expect(wasPrTurnActive("o", "r", 7, 50_000, 100)).toBe(true);
+    expect(wasPrTurnActive("o", "r", 7, 70_000, 100)).toBe(false);
+  });
+
+  test("active while running, then for the grace window after the end", () => {
+    resetTurnActivity();
+    const end = markTurnStarted("github:O/R:7", 1_000);
+    expect(wasPrTurnActive("o", "r", 7, 5_000, 100)).toBe(true);
+    end(2_000);
+    expect(wasPrTurnActive("o", "r", 7, 2_050, 100)).toBe(true);
+    expect(wasPrTurnActive("o", "r", 7, 2_200, 100)).toBe(false);
+    expect(wasPrTurnActive("o", "r", 7, 500, 100)).toBe(false);
+    expect(wasPrTurnActive("o", "r", 8, 1_500, 100)).toBe(false);
   });
 });

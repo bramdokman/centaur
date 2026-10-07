@@ -1,9 +1,10 @@
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { StateAdapter } from "chat";
 import { backgroundWaitUntil } from "./context";
-import { isBotLogin } from "./identity";
+import { isBotLogin, isOwnActorLogin } from "./identity";
 import { reactWorkingOnReview, settleReviewReaction } from "./reactions";
 import { runTurnStream, turnOutputChars } from "./turn";
+import { wasPrTurnActive } from "./turn-activity";
 import {
   fetchCiEvaluation,
   maybeEmitReviewSubmitted,
@@ -370,12 +371,84 @@ export async function handleReviewEvent(
     return;
   }
   if (reviewState === "changes_requested" || reviewState === "commented") {
+    const agentReason = await agentReviewSkipReason(ctx, repo, number, reviewNode, reviewer);
+    if (agentReason) {
+      traceLog(ctx.options, "githubbot_agent_review_skipped", undefined, {
+        pr: `${repo.owner}/${repo.repo}#${number}`,
+        reason: agentReason,
+        review_id: reviewId,
+        reviewer: reviewer ?? "unknown",
+      });
+      return;
+    }
     fireAddressReviewTurn(ctx, repo.owner, repo.repo, pr, {
       reviewer: reviewer ?? "the reviewer",
       reviewId,
       reviewNodeId: stringValue(reviewNode.node_id),
     });
   }
+}
+
+// A review an agent login submits up to this long after a bot turn on the PR
+// ended still counts as the agent's (webhook lag, stream close vs. API stamp).
+const AGENT_REVIEW_GRACE_MS = 2 * 60 * 1000;
+const REVIEW_COMMENTS_PAGE = 100;
+
+/**
+ * Why a submitted review is the agent's own noise rather than a human review,
+ * or undefined when it should be addressed.
+ *
+ * The sandbox posts as an agent login (GITHUBBOT_AGENT_LOGINS, e.g. the PAT's
+ * user), so replying inline to a review thread creates a COMMENTED review
+ * under that login — indistinguishable by author from the human who owns the
+ * login. Only agent-login reviews are considered (a stranger's review is always
+ * addressed; the bot's own was dropped earlier), and one is skipped when:
+ *  - `during-bot-turn`: a bot turn on this PR was running when it was
+ *    submitted, or had ended within AGENT_REVIEW_GRACE_MS; or
+ *  - `reply-only`: it has no body and every comment in it is a reply to an
+ *    existing thread (`in_reply_to_id`) — what an inline reply produces.
+ * The first catches anything the agent posts mid-turn (including a top-level
+ * `gh pr review --comment`); the second is content-based, so it holds across a
+ * githubbot restart or a slow webhook. A fresh human review from the same
+ * login, outside any bot turn and with a body or a new comment, is still
+ * addressed; a human's reply-only review is not (@-mention the bot instead).
+ */
+async function agentReviewSkipReason(
+  ctx: PrManagerContext,
+  repo: { owner: string; repo: string },
+  number: number,
+  reviewNode: Record<string, unknown>,
+  reviewer: string | undefined,
+): Promise<"during-bot-turn" | "reply-only" | undefined> {
+  if (!reviewer || !ctx.options.agentLogins?.length) return undefined;
+  if (!isOwnActorLogin(reviewer, ctx.userName, ctx.options.agentLogins)) return undefined;
+  const submittedAt = Date.parse(stringValue(reviewNode.submitted_at) ?? "");
+  const atMs = Number.isFinite(submittedAt) ? submittedAt : Date.now();
+  if (wasPrTurnActive(repo.owner, repo.repo, number, atMs, AGENT_REVIEW_GRACE_MS)) {
+    return "during-bot-turn";
+  }
+  if ((stringValue(reviewNode.body) ?? "").trim()) return undefined;
+  const reviewId = numberValue(reviewNode.id);
+  if (reviewId === undefined) return undefined;
+  try {
+    const { data } = await ctx.octokit.rest.pulls.listCommentsForReview({
+      owner: repo.owner,
+      repo: repo.repo,
+      pull_number: number,
+      review_id: reviewId,
+      per_page: REVIEW_COMMENTS_PAGE,
+    });
+    const comments = data as { in_reply_to_id?: number | null }[];
+    // A full page may hide a later, non-reply comment: address it.
+    if (comments.length < REVIEW_COMMENTS_PAGE && comments.length > 0 && comments.every((c) => typeof c.in_reply_to_id === "number")) {
+      return "reply-only";
+    }
+  } catch (error) {
+    logger(ctx).debug("githubbot_review_comments_fetch_failed", {
+      error: errorMessage(error),
+    });
+  }
+  return undefined;
 }
 
 /** check_run / check_suite / workflow_run completed -> CI-settled gate. */
@@ -453,7 +526,10 @@ async function processCi(
   // human has explicitly handed it over and we fix it regardless of who pushed).
   if (!force) {
     const headAuthor = await commitAuthor(ctx, owner, repo, headSha);
-    if (headAuthor && !isBotLogin(headAuthor, ctx.userName)) {
+    if (
+      headAuthor &&
+      !isOwnActorLogin(headAuthor, ctx.userName, ctx.options.agentLogins)
+    ) {
       traceLog(ctx.options, "githubbot_ci_human_commit_skipped", trace, {
         author: headAuthor,
       });

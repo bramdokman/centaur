@@ -25,6 +25,7 @@ import type {
   GithubbotThreadState,
   GithubbotTrace,
 } from "./types";
+import { markTurnStarted } from "./turn-activity";
 import { errorMessage, noopLogger, traceLog } from "./utils";
 
 const THREAD_TURN_MAX_RETRIES = 3;
@@ -190,9 +191,16 @@ export function runTurnStream(
   // lifecycle-driven management turn (both keyed to `github-manage:…`) can't run
   // concurrently in one sandbox and interleave git/push operations. Different
   // session keys still run in parallel.
-  return runExclusive(forwardInput.threadId, () =>
-    runTurnStreamInner(options, forwardInput),
-  );
+  return runExclusive(forwardInput.threadId, async () => {
+    // Recorded so a review an agent login posts while (or just after) this turn
+    // runs isn't mistaken for a human review (see handleReviewEvent).
+    const markEnded = markTurnStarted(forwardInput.threadId);
+    try {
+      return await runTurnStreamInner(options, forwardInput);
+    } finally {
+      markEnded();
+    }
+  });
 }
 
 async function runTurnStreamInner(

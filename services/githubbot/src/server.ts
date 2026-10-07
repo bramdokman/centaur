@@ -158,6 +158,7 @@ const options: GithubbotOptions = {
   stateKeyPrefix: optionalEnv("GITHUBBOT_STATE_KEY_PREFIX"),
   token,
   app: githubApp,
+  agentLogins: listEnv("GITHUBBOT_AGENT_LOGINS"),
   userName,
   webhookSecret,
   logger: consoleLogger,

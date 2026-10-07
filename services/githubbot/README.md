@@ -97,7 +97,11 @@ management thread (`github-manage:{owner}/{repo}:{n}`); the agent does its GitHu
   Actions jobs, which is exactly what that count check catches.
 - **Address review.** A submitted review (`changes_requested` / `commented`) triggers one holistic
   turn that reads all the feedback, makes a single coherent commit, replies on each thread, resolves
-  what it addressed, and re-requests review.
+  what it addressed, and re-requests review. A review by one of `GITHUBBOT_AGENT_LOGINS` is skipped
+  when it was submitted while a bot turn on that PR was running (or within 2 min of one), or when
+  it has no body and only contains replies to existing threads: that is the agent's own inline reply
+  (posted via the sandbox's PAT), not a human review. A reply-only review written by the human who owns
+  that login is skipped too; @-mention the bot instead.
 - **Merge when ready.** Deterministic — no agent. When GitHub reports the PR `mergeable_state == clean`
   the bot merges it (`GITHUBBOT_MERGE_METHOD`, default squash) and deletes the branch. `dirty` →
   conflict-resolution turn; `behind` → branch update; anything else → wait. Enabled by default for
@@ -144,7 +148,9 @@ are skipped either way. An App can't be assigned or requested as a reviewer (tea
 ignored in App mode), so it is driven through `@`-mentions. Permissions: Issues and Pull requests
 read/write; Checks, Commit statuses, Actions, Contents and Metadata read. Auto-merge, branch updates
 and branch deletion need Contents write; without it, keep `GITHUBBOT_AUTO_MERGE=false`. The sandbox
-keeps its own `GITHUB_TOKEN` for git and `gh`.
+keeps its own `GITHUB_TOKEN` for git and `gh`; when that is a teammate PAT, list that login in
+`GITHUBBOT_AGENT_LOGINS` so the CI-fix loop treats the agent's pushes as its own (the teammate's
+hand-made commits on a bot-owned PR then count as the bot's too).
 
 **PAT teammate.** A personal access token for the bot's GitHub teammate account (`GITHUB_TOKEN`). As a
 normal user account it is natively mentionable, assignable, and requestable as a reviewer, and the
@@ -156,7 +162,7 @@ agent's git-operations token; this one is the bot's own identity. The chart wire
 from a separate `GITHUBBOT_TOKEN` secret key to avoid collision.
 
 In the chart, App mode is `githubbot.app.id` (plus `app.installationId`, `app.privateKeySecretKey`),
-with `githubbot.botUserId`. The App's own webhook
+with `githubbot.botUserId` and `githubbot.agentLogins`. The App's own webhook
 can stay off: a repo or org webhook delivering the events below works the same.
 
 Webhook events to subscribe: **Issue comments**, **Pull request review comments**, **Issues**, **Pull
@@ -171,6 +177,7 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 | `GITHUBBOT_APP_ID` / `GITHUBBOT_APP_PRIVATE_KEY` | ✅ (App mode) | GitHub App id and PEM private key (or `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY`). Takes precedence over `GITHUB_TOKEN`. |
 | `GITHUBBOT_APP_INSTALLATION_ID` | — | Installation to act as (or `GITHUB_INSTALLATION_ID`). Unset: discovered at boot. |
 | `GITHUBBOT_APP_REPOSITORY` | — | `owner/repo` whose installation discovery picks when the App has several. |
+| `GITHUBBOT_AGENT_LOGINS` | — | Comma-separated logins whose commits count as the bot's own for the CI-fix human back-off (the sandbox's push identity). Their reply-only reviews, and reviews made during a bot turn on the PR, don't start address-review turns. |
 | `GITHUB_WEBHOOK_SECRET` | ✅ | Webhook signing secret (or `GITHUBBOT_WEBHOOK_SECRET`). |
 | `GITHUB_BOT_USERNAME` | ✅ | The bot account's GitHub login (an App's slug) — drives `@`-mention and requested-reviewer matching (or `GITHUBBOT_USER_NAME`). |
 | `GITHUBBOT_DATABASE_URL` | ✅ | Postgres for chat-SDK state (falls back to `DATABASE_URL` / `POSTGRES_URL`). |
@@ -201,7 +208,7 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 ## Tests
 
 `bun test test` — unit tests for App auth (installation discovery, a webhook round trip in App mode,
-the `[bot]` loop guard), bot-login matching, the override flag parser, the GitHub thread-key parsing / context
+the `[bot]` loop guard), bot-login matching, the agent-login CI back-off and self-review skip, the override flag parser, the GitHub thread-key parsing / context
 preamble, the review-request trigger gating (incl. team requests), the issue-assignment gating, the
 v2 PR-manager decision logic (CI evaluation, centaur-skip checks, the Actions fallback for unreadable check detail, assignment-based ownership, merge
 gating, the CI-fix counter / escalation, and the merge-claim release-on-failure), the

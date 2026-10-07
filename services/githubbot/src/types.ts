@@ -176,6 +176,12 @@ export type GithubbotOptions = {
    */
   userName?: string;
   /**
+   * Logins whose commits count as the bot's own for the CI-fix human back-off:
+   * the account the sandbox pushes as, when that differs from the bot (an App
+   * bot with a teammate PAT in the sandbox). The bot login always counts.
+   */
+  agentLogins?: string[];
+  /**
    * GitHub `author_association` values allowed to drive the conversational
    * (comment-mention) path. Defaults to OWNER/MEMBER/COLLABORATOR; the sentinel
    * "*" allows everyone (e.g. a fully-private repo where every commenter is

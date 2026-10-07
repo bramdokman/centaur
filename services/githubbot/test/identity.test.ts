@@ -1,7 +1,7 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { discoverInstallationId, normalizePrivateKey } from "../src/app-auth";
-import { botMentionName, isBotLogin } from "../src/identity";
+import { botMentionName, isBotLogin, isOwnActorLogin } from "../src/identity";
 import { githubAuthConfig } from "../src/index";
 
 describe("botMentionName", () => {
@@ -37,6 +37,15 @@ describe("isBotLogin", () => {
     expect(isBotLogin(undefined, "centaur-bot")).toBe(false);
     expect(isBotLogin("", "centaur-bot")).toBe(false);
     expect(isBotLogin("[bot]", "")).toBe(false);
+  });
+});
+
+describe("isOwnActorLogin", () => {
+  test("counts the bot and the configured agent logins", () => {
+    expect(isOwnActorLogin("my-app[bot]", "my-app", undefined)).toBe(true);
+    expect(isOwnActorLogin("Octocat", "my-app", ["octocat"])).toBe(true);
+    expect(isOwnActorLogin("someone", "my-app", ["octocat"])).toBe(false);
+    expect(isOwnActorLogin(undefined, "my-app", ["octocat"])).toBe(false);
   });
 });
 

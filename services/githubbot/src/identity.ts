@@ -31,3 +31,22 @@ export function isBotLogin(
   const candidate = login.trim().toLowerCase();
   return candidate === bare || candidate === `${bare}[bot]`;
 }
+
+/**
+ * Whether a commit/comment author login is one of the bot's own identities:
+ * the bot login, or one of the configured agent logins (the account the sandbox
+ * pushes as, when that differs from the bot — e.g. an App bot whose sandbox
+ * uses a teammate PAT).
+ */
+export function isOwnActorLogin(
+  login: string | null | undefined,
+  userName: string,
+  agentLogins: readonly string[] | undefined,
+): boolean {
+  if (!login) return false;
+  if (isBotLogin(login, userName)) return true;
+  const candidate = login.trim().toLowerCase();
+  return (agentLogins ?? []).some(
+    (entry) => entry.trim().toLowerCase() === candidate,
+  );
+}
