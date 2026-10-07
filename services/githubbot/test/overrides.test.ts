@@ -34,6 +34,15 @@ describe("extractMessageOverrides", () => {
     expect(extractMessageOverrides("--nanocodex review this").harnessType).toBe(
       "nanocodex",
     );
+    expect(extractMessageOverrides("--pi review this").harnessType).toBe("pi");
+  });
+
+  test("parses --pi with a provider-qualified model", () => {
+    expect(extractMessageOverrides("--pi --model zai/glm-5.3 fix it")).toEqual({
+      cleanedText: "fix it",
+      harnessType: "pi",
+      model: "zai/glm-5.3",
+    });
   });
 
   test("parses harness flag anywhere in the message", () => {

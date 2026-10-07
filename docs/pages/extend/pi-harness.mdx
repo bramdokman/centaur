@@ -2,8 +2,9 @@
 
 Centaur can run [Pi](https://github.com/earendil-works/pi) as a session
 harness alongside Codex, Claude Code, Amp, Nanocodex, and Hermes. Start a
-Slack thread with `--pi`, or set `pi` as a Slack channel default. Pi is
-available from Slack only for now.
+Slack thread or a GitHub comment thread with `--pi`, or set `pi` as a Slack
+channel default. To run GitHub review, issue-work, and PR-management turns on
+Pi, set `githubbot.defaultHarness: pi`.
 
 The sandbox keeps one `pi --mode rpc` process per thread. Pi saves the session
 on disk under an id derived from the thread key, so an interrupt (which stops

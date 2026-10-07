@@ -1,7 +1,8 @@
 /**
  * Inline message directives, cloned from slackbotv2 (which restored them from
  * the v1 slackbot):
- *   --claude | --claude-code | --amp | --codex   pick the harness for the thread
+ *   --claude | --claude-code | --amp | --codex | --nanocodex | --pi
+ *                                                pick the harness for the thread
  *   --provider <name>                            codex via a configured provider
  *   --model <name> (or --model=<name>)           pick the model within that harness
  *   --fable | --opus | --sonnet | --haiku        model shortcuts (imply claude-code)
@@ -33,6 +34,7 @@ const HARNESS_FLAGS: Record<string, string> = {
   claudecode: "claudecode",
   codex: "codex",
   nanocodex: "nanocodex",
+  pi: "pi",
 };
 
 // Claude model aliases, usable both as bare flags (--opus) and as --model

@@ -797,6 +797,10 @@ githubbot:
     tag: latest
     pullPolicy: Always
   userName: ""
+  # Harness for new GitHub threads without an inline flag, including review,
+  # issue-work, and PR-management turns, which carry no flags. Empty uses
+  # sandbox.harnessEngine. Example: pi, with CENTAUR_PI_MODEL in sandbox.extraEnv.
+  defaultHarness: ""
   # v2 PR self-management (only acts on PRs assigned to the bot account).
   # Auto-merge respects branch protection and is paused per-PR by the hold label
   # / draft status.
