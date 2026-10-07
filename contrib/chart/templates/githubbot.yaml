@@ -99,6 +99,10 @@ spec:
             - name: GITHUBBOT_USER_ID
               value: {{ .Values.githubbot.botUserId | quote }}
 {{- end }}
+{{- if .Values.githubbot.triggerLabel }}
+            - name: GITHUBBOT_TRIGGER_LABEL
+              value: {{ .Values.githubbot.triggerLabel | quote }}
+{{- end }}
 {{- if .Values.githubbot.agentLogins }}
             - name: GITHUBBOT_AGENT_LOGINS
               value: {{ .Values.githubbot.agentLogins | quote }}

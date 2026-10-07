@@ -176,6 +176,12 @@ export type GithubbotOptions = {
    */
   userName?: string;
   /**
+   * Label that hands work to the bot, alongside assignment (a GitHub App cannot
+   * be assigned). On an issue it starts issue work; on a PR it makes the PR
+   * bot-owned (PR self-management). Unset = label trigger off.
+   */
+  triggerLabel?: string;
+  /**
    * Logins whose commits count as the bot's own for the CI-fix human back-off:
    * the account the sandbox pushes as, when that differs from the bot (an App
    * bot with a teammate PAT in the sandbox). The bot login always counts.

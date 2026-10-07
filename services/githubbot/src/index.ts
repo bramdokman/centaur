@@ -20,7 +20,7 @@ import { backgroundWaitUntil, requestContext, waitUntil } from "./context";
 import { botMentionName, isBotLogin } from "./identity";
 import {
   handleIssueEvent,
-  isIssueAssignedToBot,
+  isIssueOwnedByBot,
   issueWorkThreadKey,
 } from "./issue-manager";
 import { extractMessageOverrides } from "./overrides";
@@ -414,7 +414,7 @@ async function resolveManagementSession(
         sessionKey = managementThreadKey(ref.owner, ref.repo, ref.number);
       }
     } else if (
-      await isIssueAssignedToBot(
+      await isIssueOwnedByBot(
         input.prManagerCtx,
         ref.owner,
         ref.repo,

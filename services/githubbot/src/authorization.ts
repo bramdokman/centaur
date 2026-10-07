@@ -5,9 +5,11 @@ import type { GithubbotOptions } from "./types";
  * @-mentions the bot drives an agent turn in a write-capable sandbox and posts a
  * transcript back, so only sufficiently-trusted authors may trigger it —
  * otherwise any commenter (anyone on a public repo) could steer the agent and
- * read back its tool output. The lifecycle paths (assignment, review-request)
- * are already gated by GitHub permissions, so this applies only to comment
- * mentions and their follow-ups.
+ * read back its tool output. The lifecycle paths (assignment, trigger label,
+ * review-request) are gated by GitHub permissions, so this applies to comment
+ * mentions and their follow-ups — plus issue hand-offs whose sender is the
+ * issue's own author (issue templates apply labels/assignees for anyone; see
+ * isIssueHandOffSenderAllowed).
  *
  * GitHub stamps every comment with an `author_association` (OWNER / MEMBER /
  * COLLABORATOR / CONTRIBUTOR / FIRST_TIME_CONTRIBUTOR / NONE / …). We trust the

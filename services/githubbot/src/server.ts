@@ -158,6 +158,7 @@ const options: GithubbotOptions = {
   stateKeyPrefix: optionalEnv("GITHUBBOT_STATE_KEY_PREFIX"),
   token,
   app: githubApp,
+  triggerLabel: optionalEnv("GITHUBBOT_TRIGGER_LABEL"),
   agentLogins: listEnv("GITHUBBOT_AGENT_LOGINS"),
   userName,
   webhookSecret,
@@ -175,6 +176,7 @@ log("info", "githubbot_started", {
     ? { app_id: githubApp.appId, installation_id: githubApp.installationId }
     : {}),
   user_name: userName,
+  trigger_label: options.triggerLabel ?? null,
 });
 
 // How long to let in-flight turns finish on SIGTERM before exiting. Default 25s

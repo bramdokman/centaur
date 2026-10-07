@@ -801,8 +801,8 @@ githubbot:
   # GitHub App identity instead of a PAT teammate. With id set, the bot acts as
   # `<slug>[bot]` through one installation and GITHUBBOT_TOKEN is not used; set
   # userName to the App's slug. An App can't be assigned or requested as a
-  # reviewer, so it is driven through @-mentions. installationId is optional:
-  # empty discovers it at boot (the App's only installation, or the one on
+  # reviewer, so pair it with triggerLabel. installationId is optional: empty
+  # discovers it at boot (the App's only installation, or the one on
   # `repository`). privateKeySecretKey names the PEM's key in the env secret.
   app:
     id: ""
@@ -812,11 +812,14 @@ githubbot:
   # Bot's numeric GitHub user id for self-message detection; empty = detect at
   # boot. For an App: `gh api users/<slug>%5Bbot%5D --jq .id`.
   botUserId: ""
+  # Label that hands work to the bot alongside assignment: on an issue it starts
+  # issue work, on a PR it makes the PR bot-owned (PR self-management). Empty = off.
+  triggerLabel: ""
   # Comma-separated logins whose commits and reviews count as the bot's own (the
   # account the sandbox pushes as, when it isn't the bot). Empty = the bot only.
   agentLogins: ""
-  # v2 PR self-management (only acts on PRs assigned to the bot account).
-  # Merging needs contents:write, which a read-only App lacks; keep autoMerge
+  # v2 PR self-management (only acts on PRs assigned to the bot account, or
+  # carrying triggerLabel). Merging needs contents:write, which a read-only App lacks; keep autoMerge
   # off for such an App.
   # Auto-merge respects branch protection and is paused per-PR by the hold label
   # / draft status.

@@ -1,7 +1,7 @@
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { StateAdapter } from "chat";
 import { backgroundWaitUntil } from "./context";
-import { isBotLogin, isOwnActorLogin } from "./identity";
+import { hasLabel, isBotLogin, isOwnActorLogin, labelNames } from "./identity";
 import { reactWorkingOnReview, settleReviewReaction } from "./reactions";
 import { runTurnStream, turnOutputChars } from "./turn";
 import { wasPrTurnActive } from "./turn-activity";
@@ -20,8 +20,8 @@ import type {
 import { errorMessage, noopLogger, nowMs, stringValue, traceLog } from "./utils";
 
 /**
- * v2: PR self-management for PRs the bot owns (it authored them, or they carry
- * the managed label). Reacts to PR/review/CI lifecycle webhooks to drive an
+ * v2: PR self-management for PRs the bot owns (assigned to it, or carrying the
+ * trigger label). Reacts to PR/review/CI lifecycle webhooks to drive an
  * owned PR toward merge:
  *  - Fix CI    — once *all* checks for a head SHA are settled and red, run a
  *                bounded fix turn (the agent diagnoses + pushes via gh).
@@ -50,15 +50,23 @@ const DEFAULT_CI_FIX_MAX_ATTEMPTS = 3;
 // ---------------------------------------------------------------------------
 
 /**
- * A PR is bot-owned when the bot is one of its assignees. Ownership is purely an
- * assignment mechanism: assign the PR to the bot to have it manage the PR toward
- * merge (and unassign to hand it back).
+ * A PR is bot-owned when the bot is one of its assignees, or — with a trigger
+ * label configured — when it carries that label. Ownership is purely an explicit
+ * hand-off: assign (or label) the PR to have the bot manage it toward merge, and
+ * unassign (or unlabel) to hand it back. The label exists because a GitHub App
+ * cannot be assigned, and the PRs an App bot works on are opened by the
+ * sandbox's account rather than by the bot.
  */
 export function isOwnedPr(input: {
   assignees: string[];
+  labels?: string[];
+  triggerLabel?: string;
   userName: string;
 }): boolean {
-  return input.assignees.some((login) => isBotLogin(login, input.userName));
+  if (input.assignees.some((login) => isBotLogin(login, input.userName))) {
+    return true;
+  }
+  return hasLabel(input.labels ?? [], input.triggerLabel);
 }
 
 export type MergeDecision =
@@ -279,7 +287,30 @@ export async function isPrOwned(
 }
 
 function owns(ctx: PrManagerContext, pr: PullRequestSummary): boolean {
-  return isOwnedPr({ assignees: pr.assignees, userName: ctx.userName });
+  return isOwnedPr({
+    assignees: pr.assignees,
+    labels: pr.labels,
+    triggerLabel: ctx.options.triggerLabel,
+    userName: ctx.userName,
+  });
+}
+
+/**
+ * Whether a `pull_request` webhook is an explicit hand-off of the PR to the bot:
+ * an assignment, or the trigger label being applied. Either one forces the
+ * take-over evaluation (past the human-commit back-off).
+ */
+export function isPrHandOff(
+  payload: Record<string, unknown>,
+  triggerLabel: string | undefined,
+): boolean {
+  const action = stringValue(payload.action);
+  if (action === "assigned") return true;
+  if (action === "labeled" && triggerLabel) {
+    const label = isRecord(payload.label) ? stringValue(payload.label.name) : undefined;
+    return !!label && hasLabel([label], triggerLabel);
+  }
+  return false;
 }
 
 /** `pull_request` lifecycle (non-review_requested actions). */
@@ -299,13 +330,21 @@ export async function handlePullRequestEvent(
   if (action === "closed") return; // nothing to drive once closed/merged.
 
   const pr = await fetchPr(ctx, repo.owner, repo.repo, number);
-  if (!pr || !owns(ctx, pr)) return;
-  // Being assigned the PR is the explicit signal to take it over: evaluate CI now
-  // (forcing past the human-commit back-off — the assignment is a human handing
-  // it to us) so an already-red or already-green PR is acted on immediately,
-  // rather than only on the next lifecycle event. processCi fixes red CI or merges
-  // when green.
-  if (action === "assigned") {
+  if (!pr) return;
+  if (!owns(ctx, pr)) {
+    // A PR the bot opened for an issue it is working is adopted by labelling it
+    // (which arrives back as a `labeled` hand-off), in case the agent forgot.
+    if (action === "opened" || action === "reopened") {
+      await adoptPrForOwnedIssue(ctx, repo.owner, repo.repo, pr, prNode);
+    }
+    return;
+  }
+  // Being assigned (or labelled) the PR is the explicit signal to take it over:
+  // evaluate CI now (forcing past the human-commit back-off — the hand-off is a
+  // human giving it to us) so an already-red or already-green PR is acted on
+  // immediately, rather than only on the next lifecycle event. processCi fixes
+  // red CI or merges when green.
+  if (isPrHandOff(payload, ctx.options.triggerLabel)) {
     await processCi(ctx, repo.owner, repo.repo, number, pr.headSha, true);
     return;
   }
@@ -873,6 +912,135 @@ async function commitAuthor(
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Adopt a freshly-opened PR that closes an issue the bot is working (assigned to
+ * it, or carrying the trigger label) by applying the trigger label. Only PRs
+ * opened by the bot's own actors (the bot, or the sandbox's agent login) are
+ * adopted, so a human's parallel PR on the same issue is left alone. The label
+ * comes back as a `labeled` hand-off, which starts PR management.
+ */
+async function adoptPrForOwnedIssue(
+  ctx: PrManagerContext,
+  owner: string,
+  repo: string,
+  pr: PullRequestSummary,
+  prNode: Record<string, unknown>,
+): Promise<void> {
+  const label = ctx.options.triggerLabel;
+  if (!label) return;
+  const author = stringValue(isRecord(prNode.user) ? prNode.user.login : undefined);
+  if (!isOwnActorLogin(author, ctx.userName, ctx.options.agentLogins)) return;
+  const issues = await closingIssues(ctx, owner, repo, pr.number);
+  const owned = issues.find(
+    (issue) =>
+      issue.repo.toLowerCase() === `${owner}/${repo}`.toLowerCase() &&
+      (hasLabel(issue.labels, label) ||
+        issue.assignees.some((login) => isBotLogin(login, ctx.userName))),
+  );
+  if (!owned) return;
+  try {
+    await ctx.octokit.rest.issues.addLabels({
+      owner,
+      repo,
+      issue_number: pr.number,
+      labels: [label],
+    });
+    traceLog(
+      ctx.options,
+      "githubbot_pr_adopted",
+      makeTrace(managementThreadKey(owner, repo, pr.number), `adopt-${pr.number}`),
+      { issue: `${owner}/${repo}#${owned.number}`, pr: `${owner}/${repo}#${pr.number}` },
+    );
+  } catch (error) {
+    logger(ctx).warn("githubbot_pr_adopt_failed", {
+      error: errorMessage(error),
+      pr: `${owner}/${repo}#${pr.number}`,
+    });
+  }
+}
+
+type ClosingIssue = {
+  assignees: string[];
+  labels: string[];
+  number: number;
+  repo: string;
+};
+
+const CLOSING_ISSUES_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      closingIssuesReferences(first: 10) {
+        nodes {
+          number
+          repository { nameWithOwner }
+          labels(first: 50) { nodes { name } }
+          assignees(first: 20) { nodes { login } }
+        }
+      }
+    }
+  }
+}`;
+
+/** Issues the PR will close (its "Closes #n" links), via GraphQL. */
+async function closingIssues(
+  ctx: PrManagerContext,
+  owner: string,
+  repo: string,
+  number: number,
+): Promise<ClosingIssue[]> {
+  try {
+    const data = (await ctx.octokit.graphql(CLOSING_ISSUES_QUERY, {
+      owner,
+      repo,
+      number,
+    })) as unknown;
+    const nodes = pathValue(data, [
+      "repository",
+      "pullRequest",
+      "closingIssuesReferences",
+      "nodes",
+    ]);
+    if (!Array.isArray(nodes)) return [];
+    return nodes.flatMap((node): ClosingIssue[] => {
+      if (!isRecord(node)) return [];
+      const issueNumber = numberValue(node.number);
+      const issueRepo = stringValue(pathValue(node, ["repository", "nameWithOwner"]));
+      if (issueNumber === undefined || !issueRepo) return [];
+      return [
+        {
+          assignees: loginsOf(pathValue(node, ["assignees", "nodes"])),
+          labels: labelNames(pathValue(node, ["labels", "nodes"])),
+          number: issueNumber,
+          repo: issueRepo,
+        },
+      ];
+    });
+  } catch (error) {
+    logger(ctx).debug("githubbot_closing_issues_fetch_failed", {
+      error: errorMessage(error),
+      pr: `${owner}/${repo}#${number}`,
+    });
+    return [];
+  }
+}
+
+function pathValue(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (!isRecord(current)) return undefined;
+    current = current[key];
+  }
+  return current;
+}
+
+function loginsOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const login = isRecord(entry) ? stringValue(entry.login) : undefined;
+    return login ? [login] : [];
+  });
 }
 
 async function fetchPrNumbersForCommit(

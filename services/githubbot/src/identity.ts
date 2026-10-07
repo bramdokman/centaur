@@ -50,3 +50,31 @@ export function isOwnActorLogin(
     (entry) => entry.trim().toLowerCase() === candidate,
   );
 }
+
+/** Whether `labels` contains `label` (case-insensitive). Unset label -> false. */
+export function hasLabel(
+  labels: readonly string[],
+  label: string | undefined,
+): boolean {
+  if (!label) return false;
+  const target = label.trim().toLowerCase();
+  if (!target) return false;
+  return labels.some((name) => name.trim().toLowerCase() === target);
+}
+
+/** Label names from a webhook/REST `labels` array (strings or `{name}` objects). */
+export function labelNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  for (const entry of value) {
+    if (typeof entry === "string") {
+      if (entry) names.push(entry);
+      continue;
+    }
+    if (entry && typeof entry === "object" && "name" in entry) {
+      const name = (entry as { name?: unknown }).name;
+      if (typeof name === "string" && name) names.push(name);
+    }
+  }
+  return names;
+}

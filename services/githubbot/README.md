@@ -54,6 +54,15 @@ reviewer** like any other collaborator.
   verifies the signature) and de-duplicated by delivery id. The **issue-work methodology** is a
   bundled, standalone default (`src/issue-prompt.ts`) that a deployment can **fully replace** via
   `GITHUBBOT_ISSUE_PROMPT` / `GITHUBBOT_ISSUE_PROMPT_FILE` (used verbatim, like the review prompt).
+- **Labelling an issue with the trigger label** (`issues` / `labeled`, label = `GITHUBBOT_TRIGGER_LABEL`,
+  off when unset) → the same issue-work turn as an assignment. This is the hand-off for a **GitHub App**
+  bot, which can't be assigned. An assignment and a label arriving together work the issue once. With
+  a trigger label set, the agent is told to put that label on the PR it opens, which hands the PR to PR
+  self-management. Issue templates/forms apply their `labels:`/`assignees:` for any author, so when the
+  account making the hand-off is the issue's own author, that author must pass the comment path's
+  author-association gate (`GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS`); a hand-off by anyone else needs
+  triage access, which GitHub enforces. Note that a workflow which labels issues from untrusted authors
+  (e.g. an auto-labeler) acts with triage access, so don't let one apply the trigger label.
 - **Per-turn context**: every turn prepends a compact header naming the PR/issue so a recycled
   sandbox always knows which subject to act on and where to reply.
 - `--claude` / `--codex` / `--amp` / `--provider …` / `--model …` / `--opus|--sonnet|--haiku` inline flags pick the
@@ -61,12 +70,15 @@ reviewer** like any other collaborator.
 
 ## PR self-management (v2)
 
-For PRs the bot **owns** — i.e. **assigned to the bot account** — githubbot drives the PR toward merge
-by reacting to lifecycle webhooks. Ownership is purely an assignment mechanism: assign a PR to the bot
-to have it take over, and unassign to hand it back. It only ever acts on owned PRs, and on a dedicated
+For PRs the bot **owns** — i.e. **assigned to the bot account**, or carrying the trigger label
+(`GITHUBBOT_TRIGGER_LABEL`) — githubbot drives the PR toward merge by reacting to lifecycle webhooks.
+Ownership is an explicit hand-off: assign (or label) a PR to have the bot take over, and unassign (or
+unlabel) to hand it back. When a PR is opened by one of the bot's own actors (the bot, or a
+`GITHUBBOT_AGENT_LOGINS` login) and closes an issue the bot is working (assigned or labelled), githubbot
+applies the trigger label itself, in case the agent did not. It only ever acts on owned PRs, and on a dedicated
 management thread (`github-manage:{owner}/{repo}:{n}`); the agent does its GitHub writes via `gh`.
 
-- **Take over on assign.** Being assigned a PR is the explicit signal to take it over, so the bot
+- **Take over on assign (or label).** Being assigned (or labelled) a PR is the explicit signal to take it over, so the bot
   immediately evaluates CI (fixing red or merging green) rather than waiting for the next lifecycle
   event.
 - **Fix CI.** When **all** checks for a head SHA are settled (not per failing job — interwoven jobs
@@ -145,7 +157,7 @@ installation, or the one on `GITHUBBOT_APP_REPOSITORY`). Set `GITHUB_BOT_USERNAM
 mention an App as `@<slug>`; `<slug>[bot]` is accepted too) and `GITHUBBOT_USER_ID` to the bot user's
 id (`gh api 'users/<slug>[bot]' --jq .id`) for the self-message guard; comments from the `[bot]` login
 are skipped either way. An App can't be assigned or requested as a reviewer (team review requests are
-ignored in App mode), so it is driven through `@`-mentions. Permissions: Issues and Pull requests
+ignored in App mode), so use `GITHUBBOT_TRIGGER_LABEL`. Permissions: Issues and Pull requests
 read/write; Checks, Commit statuses, Actions, Contents and Metadata read. Auto-merge, branch updates
 and branch deletion need Contents write; without it, keep `GITHUBBOT_AUTO_MERGE=false`. The sandbox
 keeps its own `GITHUB_TOKEN` for git and `gh`; when that is a teammate PAT, list that login in
@@ -162,7 +174,7 @@ agent's git-operations token; this one is the bot's own identity. The chart wire
 from a separate `GITHUBBOT_TOKEN` secret key to avoid collision.
 
 In the chart, App mode is `githubbot.app.id` (plus `app.installationId`, `app.privateKeySecretKey`),
-with `githubbot.botUserId` and `githubbot.agentLogins`. The App's own webhook
+with `githubbot.botUserId`, `githubbot.triggerLabel` and `githubbot.agentLogins`. The App's own webhook
 can stay off: a repo or org webhook delivering the events below works the same.
 
 Webhook events to subscribe: **Issue comments**, **Pull request review comments**, **Issues**, **Pull
@@ -177,7 +189,8 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 | `GITHUBBOT_APP_ID` / `GITHUBBOT_APP_PRIVATE_KEY` | ✅ (App mode) | GitHub App id and PEM private key (or `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY`). Takes precedence over `GITHUB_TOKEN`. |
 | `GITHUBBOT_APP_INSTALLATION_ID` | — | Installation to act as (or `GITHUB_INSTALLATION_ID`). Unset: discovered at boot. |
 | `GITHUBBOT_APP_REPOSITORY` | — | `owner/repo` whose installation discovery picks when the App has several. |
-| `GITHUBBOT_AGENT_LOGINS` | — | Comma-separated logins whose commits count as the bot's own for the CI-fix human back-off (the sandbox's push identity). Their reply-only reviews, and reviews made during a bot turn on the PR, don't start address-review turns. |
+| `GITHUBBOT_TRIGGER_LABEL` | — | Label that hands an issue (issue work) or PR (PR self-management) to the bot, alongside assignment. Unset = off. |
+| `GITHUBBOT_AGENT_LOGINS` | — | Comma-separated logins whose commits count as the bot's own for the CI-fix human back-off and PR adoption (the sandbox's push identity). Their reply-only reviews, and reviews made during a bot turn on the PR, don't start address-review turns. |
 | `GITHUB_WEBHOOK_SECRET` | ✅ | Webhook signing secret (or `GITHUBBOT_WEBHOOK_SECRET`). |
 | `GITHUB_BOT_USERNAME` | ✅ | The bot account's GitHub login (an App's slug) — drives `@`-mention and requested-reviewer matching (or `GITHUBBOT_USER_NAME`). |
 | `GITHUBBOT_DATABASE_URL` | ✅ | Postgres for chat-SDK state (falls back to `DATABASE_URL` / `POSTGRES_URL`). |
@@ -208,7 +221,7 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 ## Tests
 
 `bun test test` — unit tests for App auth (installation discovery, a webhook round trip in App mode,
-the `[bot]` loop guard), bot-login matching, the agent-login CI back-off and self-review skip, the override flag parser, the GitHub thread-key parsing / context
+the `[bot]` loop guard), bot-login and label matching, the label triggers and PR adoption, the override flag parser, the GitHub thread-key parsing / context
 preamble, the review-request trigger gating (incl. team requests), the issue-assignment gating, the
 v2 PR-manager decision logic (CI evaluation, centaur-skip checks, the Actions fallback for unreadable check detail, assignment-based ownership, merge
 gating, the CI-fix counter / escalation, and the merge-claim release-on-failure), the

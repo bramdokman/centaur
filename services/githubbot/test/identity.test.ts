@@ -1,7 +1,13 @@
 import { generateKeyPairSync } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import { discoverInstallationId, normalizePrivateKey } from "../src/app-auth";
-import { botMentionName, isBotLogin, isOwnActorLogin } from "../src/identity";
+import {
+  botMentionName,
+  hasLabel,
+  isBotLogin,
+  isOwnActorLogin,
+  labelNames,
+} from "../src/identity";
 import { githubAuthConfig } from "../src/index";
 
 describe("botMentionName", () => {
@@ -46,6 +52,23 @@ describe("isOwnActorLogin", () => {
     expect(isOwnActorLogin("Octocat", "my-app", ["octocat"])).toBe(true);
     expect(isOwnActorLogin("someone", "my-app", ["octocat"])).toBe(false);
     expect(isOwnActorLogin(undefined, "my-app", ["octocat"])).toBe(false);
+  });
+});
+
+describe("labels", () => {
+  test("hasLabel is case-insensitive and off when unset", () => {
+    expect(hasLabel(["bug", "Centaur"], "centaur")).toBe(true);
+    expect(hasLabel(["bug"], "centaur")).toBe(false);
+    expect(hasLabel(["centaur"], undefined)).toBe(false);
+    expect(hasLabel(["centaur"], "  ")).toBe(false);
+  });
+
+  test("labelNames reads strings and {name} objects", () => {
+    expect(labelNames(["a", { name: "b" }, { color: "x" }, null, ""])).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(labelNames(undefined)).toEqual([]);
   });
 });
 

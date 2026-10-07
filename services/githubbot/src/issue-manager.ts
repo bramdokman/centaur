@@ -1,5 +1,6 @@
+import { resolveAllowedAuthorAssociations } from "./authorization";
 import { backgroundWaitUntil } from "./context";
-import { isBotLogin } from "./identity";
+import { hasLabel, isBotLogin, labelNames } from "./identity";
 import { DEFAULT_ISSUE_PROMPT } from "./issue-prompt";
 import type { PrManagerContext } from "./pr-manager";
 import { reactWorkingOnSubject, settleSubjectReaction } from "./reactions";
@@ -7,6 +8,7 @@ import { runTurnStream, turnOutputChars } from "./turn";
 import type {
   ForwardSessionInput,
   GithubbotApiMessage,
+  GithubbotOptions,
   GithubbotTrace,
 } from "./types";
 import { errorMessage, noopLogger, nowMs, stringValue, traceLog } from "./utils";
@@ -35,6 +37,9 @@ type IssueManagerContext = PrManagerContext;
 // to cover GitHub's redelivery window without growing state unboundedly.
 const ISSUE_WORK_DEDUP_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const ASSIGNED_CACHE_TTL_MS = 10 * 60 * 1000;
+// Assignment + trigger label applied together arrive as two deliveries; within
+// this window the second is folded into the first.
+const ISSUE_TRIGGER_COALESCE_MS = 2 * 60 * 1000;
 
 export function issueWorkThreadKey(
   owner: string,
@@ -44,7 +49,63 @@ export function issueWorkThreadKey(
   return `github-issue:${owner}/${repo}:${n}`;
 }
 
-/** `issues` lifecycle: on `assigned` to the bot, run an autonomous work turn. */
+export type IssueTrigger = "assigned" | "labeled";
+
+/**
+ * Which hand-off (if any) an `issues` webhook is: `assigned` when the bot is
+ * among the assignees after an assignment, `labeled` when the configured
+ * trigger label was just applied. Anything else is not ours.
+ */
+export function issueTrigger(
+  payload: Record<string, unknown>,
+  input: { userName: string; triggerLabel?: string },
+): IssueTrigger | null {
+  const action = stringValue(payload.action);
+  const issue = isRecord(payload.issue) ? payload.issue : null;
+  if (!issue) return null;
+  if (action === "assigned") {
+    return isAssignedToBot(assigneeLogins(issue.assignees), input.userName)
+      ? "assigned"
+      : null;
+  }
+  if (action === "labeled" && input.triggerLabel) {
+    const label = isRecord(payload.label) ? stringValue(payload.label.name) : undefined;
+    return label && hasLabel([label], input.triggerLabel) ? "labeled" : null;
+  }
+  return null;
+}
+
+/**
+ * Whether the account that handed the issue over may start issue work.
+ *
+ * Assigning or labelling someone else's issue needs triage access, which GitHub
+ * enforces. But issue templates / issue forms apply their `labels:` and
+ * `assignees:` on creation for *any* author, and those deliveries name the
+ * author as the sender. So when the sender is the issue's own author, apply the
+ * same author-association gate as the comment path (OWNER/MEMBER/COLLABORATOR
+ * by default); otherwise someone with triage access made the hand-off. Fails
+ * closed when the sender is missing.
+ */
+export function isIssueHandOffSenderAllowed(
+  payload: Record<string, unknown>,
+  options: Pick<GithubbotOptions, "allowedAuthorAssociations">,
+): boolean {
+  const sender = stringValue(isRecord(payload.sender) ? payload.sender.login : undefined);
+  if (!sender) return false;
+  const issue = isRecord(payload.issue) ? payload.issue : {};
+  const author = stringValue(isRecord(issue.user) ? issue.user.login : undefined);
+  if (!author || author.toLowerCase() !== sender.toLowerCase()) return true;
+  const allowed = resolveAllowedAuthorAssociations(options.allowedAuthorAssociations);
+  if (allowed.includes("*")) return true;
+  const association = stringValue(issue.author_association)?.toUpperCase();
+  return !!association && allowed.includes(association);
+}
+
+/**
+ * `issues` lifecycle: when the issue is handed to the bot — assigned to it, or
+ * given the trigger label (a GitHub App can't be assigned) — run an autonomous
+ * work turn.
+ */
 export function handleIssueEvent(
   ctx: IssueManagerContext,
   rawBody: string,
@@ -52,15 +113,24 @@ export function handleIssueEvent(
 ): Promise<void> | null {
   const payload = parseJson(rawBody);
   if (!payload) return null;
-  if (stringValue(payload.action) !== "assigned") return null;
+  const trigger = issueTrigger(payload, {
+    userName: ctx.userName,
+    triggerLabel: ctx.options.triggerLabel,
+  });
+  // Not a hand-off to us (a different assignee, another label, other actions).
+  if (!trigger) return null;
   const issue = isRecord(payload.issue) ? payload.issue : null;
   const repo = repoFromPayload(payload);
   if (!issue || !repo) return null;
   const number = numberValue(issue.number);
   if (number === undefined) return null;
   if (stringValue(issue.state) !== "open") return null;
-  if (!isAssignedToBot(assigneeLogins(issue.assignees), ctx.userName)) {
-    // A different assignee — not ours to act on.
+  if (!isIssueHandOffSenderAllowed(payload, ctx.options)) {
+    traceLog(ctx.options, "githubbot_issue_trigger_unauthorized_skipped", undefined, {
+      issue: `${repo.owner}/${repo.repo}#${number}`,
+      trigger,
+      association: stringValue(issue.author_association) ?? "unknown",
+    });
     return null;
   }
 
@@ -106,9 +176,30 @@ export function handleIssueEvent(
       });
       return;
     }
+    // Assigning and labelling together (or the label landing with `gh issue
+    // create --assignee --label`) arrives as two deliveries seconds apart; work
+    // the issue once. A later re-assignment/re-label still re-triggers.
+    let fresh = true;
+    try {
+      fresh = await state.setIfNotExists(
+        `${options.stateKeyPrefix ?? "centaur-githubbot"}:issue-trigger:${threadKey}`,
+        "1",
+        ISSUE_TRIGGER_COALESCE_MS,
+      );
+    } catch {
+      // best-effort; worst case both deliveries run
+    }
+    if (!fresh) {
+      traceLog(options, "githubbot_issue_trigger_coalesced", trace, {
+        delivery_id: deliveryId,
+        trigger,
+      });
+      return;
+    }
     traceLog(options, "githubbot_issue_assigned", trace, {
       assigner,
       issue: `${repo.owner}/${repo.repo}#${number}`,
+      trigger,
     });
     // No triggering comment on an assignment, so ack on the issue itself —
     // instant 👀, settled to 🚀/😕 when the work turn finishes.
@@ -129,6 +220,8 @@ export function handleIssueEvent(
         repo: repo.repo,
         threadKey,
         title,
+        trigger,
+        triggerLabel: options.triggerLabel,
         url,
       }),
       messages: [],
@@ -176,11 +269,12 @@ export function handleIssueEvent(
 }
 
 /**
- * Whether an issue is assigned to the bot, cached briefly so the conversational
- * path doesn't hit the API on every comment. Mirrors the PR manager's isPrOwned;
- * a stale result only affects which session a reply shares context with.
+ * Whether an issue is the bot's work (assigned to it, or carrying the trigger
+ * label), cached briefly so the conversational path doesn't hit the API on every
+ * comment. Mirrors the PR manager's isPrOwned; a stale result only affects which
+ * session a reply shares context with.
  */
-export async function isIssueAssignedToBot(
+export async function isIssueOwnedByBot(
   ctx: IssueManagerContext,
   owner: string,
   repo: string,
@@ -201,10 +295,9 @@ export async function isIssueAssignedToBot(
       repo,
       issue_number: number,
     });
-    assigned = isAssignedToBot(
-      assigneeLogins(data.assignees),
-      ctx.userName,
-    );
+    assigned =
+      isAssignedToBot(assigneeLogins(data.assignees), ctx.userName) ||
+      hasLabel(labelNames(data.labels), ctx.options.triggerLabel);
   } catch (error) {
     (ctx.options.logger ?? noopLogger).debug(
       "githubbot_issue_assignment_lookup_failed",
@@ -228,12 +321,10 @@ function issueTriggerMessage(input: {
   repo: string;
   threadKey: string;
   title: string;
+  trigger?: IssueTrigger;
+  triggerLabel?: string;
   url: string;
 }): GithubbotApiMessage {
-  const text =
-    `You have been assigned GitHub issue ${input.owner}/${input.repo}#${input.number} — ` +
-    `"${input.title}" (${input.url}) by @${input.assigner}. Work it now, following ` +
-    `your guidance above, using the gh CLI and git in your sandbox.`;
   return {
     attachments: [],
     author: {
@@ -248,10 +339,48 @@ function issueTriggerMessage(input: {
     id: `issue-${input.threadKey}-${input.deliveryId}`,
     isMention: true,
     raw: { githubbotIssueWork: true, url: input.url },
-    text,
+    text: issueTriggerText(input),
     threadId: input.threadKey,
     timestamp: new Date().toISOString(),
   };
+}
+
+/**
+ * The issue-work turn's message. With a trigger label configured, PR ownership
+ * runs through that label (the sandbox may push as a different account than the
+ * bot, so "assign the PR to yourself" would not reach the bot), so the agent is
+ * told to put the label on the PR it opens.
+ */
+export function issueTriggerText(input: {
+  assigner: string;
+  number: number;
+  owner: string;
+  repo: string;
+  title: string;
+  trigger?: IssueTrigger;
+  triggerLabel?: string;
+  url: string;
+}): string {
+  const handedOver =
+    input.trigger === "labeled"
+      ? `You have been handed GitHub issue ${input.owner}/${input.repo}#${input.number} — ` +
+        `"${input.title}" (${input.url}) by @${input.assigner}, who added the ` +
+        `"${input.triggerLabel ?? ""}" label.`
+      : `You have been assigned GitHub issue ${input.owner}/${input.repo}#${input.number} — ` +
+        `"${input.title}" (${input.url}) by @${input.assigner}.`;
+  const labelLine = input.triggerLabel
+    ? ` When you open the pull request, add the label "${input.triggerLabel}" to it ` +
+      `(e.g. \`gh pr create --label ${shellQuote(input.triggerLabel)}\`): that label is ` +
+      `how you keep managing the PR through CI and review.`
+    : "";
+  return (
+    `${handedOver} Work it now, following your guidance above, using the gh CLI ` +
+    `and git in your sandbox.${labelLine}`
+  );
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_.:/-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 // ---------------------------------------------------------------------------

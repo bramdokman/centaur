@@ -3,8 +3,10 @@ import { drainBackgroundWork } from "../src/context";
 import {
   decideMerge,
   handleCiEvent,
+  handlePullRequestEvent,
   handleReviewEvent,
   isOwnedPr,
+  isPrHandOff,
   type PrManagerContext,
 } from "../src/pr-manager";
 import { emitWorkflowEvent } from "../src/session-api";
@@ -540,8 +542,236 @@ describe("isOwnedPr", () => {
     expect(isOwnedPr({ assignees: [], userName: "centaur-bot" })).toBe(false);
   });
 
+  test("owned through the trigger label (case-insensitive)", () => {
+    expect(
+      isOwnedPr({
+        assignees: [],
+        labels: ["bug", "Centaur"],
+        triggerLabel: "centaur",
+        userName: "my-app",
+      }),
+    ).toBe(true);
+  });
+
+  test("a label means nothing while the label trigger is off", () => {
+    expect(
+      isOwnedPr({ assignees: [], labels: ["centaur"], userName: "my-app" }),
+    ).toBe(false);
+  });
+
   test("an App's [bot] assignee counts for its bare slug", () => {
     expect(isOwnedPr({ assignees: ["my-app[bot]"], userName: "my-app" })).toBe(true);
+  });
+});
+
+describe("isPrHandOff", () => {
+  test("assignment and the trigger label are hand-offs", () => {
+    expect(isPrHandOff({ action: "assigned" }, undefined)).toBe(true);
+    expect(
+      isPrHandOff({ action: "labeled", label: { name: "CENTAUR" } }, "centaur"),
+    ).toBe(true);
+  });
+
+  test("other labels, an unset trigger, and other actions are not", () => {
+    expect(isPrHandOff({ action: "labeled", label: { name: "bug" } }, "centaur")).toBe(
+      false,
+    );
+    expect(isPrHandOff({ action: "labeled", label: { name: "centaur" } }, undefined)).toBe(
+      false,
+    );
+    expect(isPrHandOff({ action: "synchronize" }, "centaur")).toBe(false);
+  });
+});
+
+describe("label-owned PRs (GitHub App bot, sandbox pushes as a teammate)", () => {
+  function labelCtx(input: {
+    agentLogins?: string[];
+    commitAuthor?: string;
+    labels?: string[];
+    closing?: unknown[];
+    addLabels?: (req: { labels: string[] }) => void;
+  }) {
+    const state = makeState();
+    const ctx = {
+      octokit: {
+        graphql: async (query: string) => {
+          if (query.includes("closingIssuesReferences")) {
+            return {
+              repository: {
+                pullRequest: {
+                  closingIssuesReferences: { nodes: input.closing ?? [] },
+                },
+              },
+            };
+          }
+          return {
+            repository: {
+              object: {
+                statusCheckRollup: {
+                  state: "FAILURE",
+                  contexts: {
+                    nodes: [
+                      {
+                        __typename: "CheckRun",
+                        name: "ci",
+                        status: "COMPLETED",
+                        conclusion: "FAILURE",
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+          };
+        },
+        rest: {
+          pulls: {
+            get: async () => ({
+              data: {
+                ...prPayload({ assignees: [], headRepoFullName: "base/repo" }),
+                labels: (input.labels ?? ["centaur"]).map((name) => ({ name })),
+              },
+            }),
+          },
+          repos: {
+            getCommit: async () => ({
+              data: { author: { login: input.commitAuthor ?? "teammate" } },
+            }),
+          },
+          issues: {
+            addLabels: async (req: { labels: string[] }) => {
+              input.addLabels?.(req);
+              return { data: [] };
+            },
+            createComment: async () => ({ data: {} }),
+          },
+        },
+      },
+      options: {
+        apiUrl: "http://localhost",
+        agentLogins: input.agentLogins,
+        ciFixMaxAttempts: 3,
+        logger: quietLogger,
+        triggerLabel: "centaur",
+        fetch: () => Promise.resolve(new Response("no", { status: 400 })),
+      },
+      state,
+      userName: "my-app",
+    } as unknown as PrManagerContext;
+    return { ctx, state };
+  }
+
+  const fixCount = async (state: ReturnType<typeof makeState>) =>
+    ((await state.get("centaur-githubbot:pr:base/repo#7")) as
+      | { consecutiveCiFixes?: number }
+      | undefined)?.consecutiveCiFixes ?? 0;
+
+  const redCheck = JSON.stringify({
+    repository: { full_name: "base/repo" },
+    check_run: { head_sha: "abc123", pull_requests: [{ number: 7 }] },
+  });
+
+  test("applying the label takes the PR over, past the human-commit back-off", async () => {
+    const { ctx, state } = labelCtx({ commitAuthor: "teammate" });
+    await handlePullRequestEvent(
+      ctx,
+      JSON.stringify({
+        action: "labeled",
+        label: { name: "centaur" },
+        repository: { full_name: "base/repo" },
+        pull_request: { number: 7 },
+      }),
+    );
+    await drainBackgroundWork(2_000);
+    expect(await fixCount(state)).toBe(1);
+  });
+
+  test("steady-state CI backs off a commit by an unknown human", async () => {
+    const { ctx, state } = labelCtx({ commitAuthor: "teammate" });
+    await handleCiEvent(ctx, "check_run", redCheck);
+    expect(await fixCount(state)).toBe(0);
+  });
+
+  test("a commit by a configured agent login counts as the bot's own", async () => {
+    const { ctx, state } = labelCtx({
+      agentLogins: ["teammate"],
+      commitAuthor: "Teammate",
+    });
+    await handleCiEvent(ctx, "check_run", redCheck);
+    await drainBackgroundWork(2_000);
+    expect(await fixCount(state)).toBe(1);
+  });
+
+  test("ignores the App's own review on a label-owned PR", async () => {
+    const { ctx } = labelCtx({});
+    let merges = 0;
+    (ctx.octokit.rest.pulls as unknown as { merge: () => unknown }).merge = () => {
+      merges += 1;
+      return { data: {} };
+    };
+    await handleReviewEvent(
+      ctx,
+      JSON.stringify({
+        action: "submitted",
+        repository: { full_name: "base/repo" },
+        pull_request: { number: 7 },
+        review: { id: 9, state: "approved", user: { login: "my-app[bot]" } },
+      }),
+    );
+    expect(merges).toBe(0);
+  });
+
+  function openedPr(author: string) {
+    return JSON.stringify({
+      action: "opened",
+      repository: { full_name: "base/repo" },
+      pull_request: { number: 7, user: { login: author } },
+    });
+  }
+
+  const labeledIssue = {
+    number: 3,
+    repository: { nameWithOwner: "base/repo" },
+    labels: { nodes: [{ name: "centaur" }] },
+    assignees: { nodes: [] },
+  };
+
+  test("adopts a PR its agent opened for an issue it is working", async () => {
+    const added: string[][] = [];
+    const { ctx } = labelCtx({
+      agentLogins: ["teammate"],
+      labels: [],
+      closing: [labeledIssue],
+      addLabels: (req) => added.push(req.labels),
+    });
+    await handlePullRequestEvent(ctx, openedPr("teammate"));
+    expect(added).toEqual([["centaur"]]);
+  });
+
+  test("leaves a human's PR, and PRs closing unowned issues, alone", async () => {
+    const added: string[][] = [];
+    const human = labelCtx({
+      agentLogins: ["teammate"],
+      labels: [],
+      closing: [labeledIssue],
+      addLabels: (req) => added.push(req.labels),
+    });
+    await handlePullRequestEvent(human.ctx, openedPr("someone-else"));
+    const unowned = labelCtx({
+      agentLogins: ["teammate"],
+      labels: [],
+      closing: [{ ...labeledIssue, labels: { nodes: [{ name: "bug" }] } }],
+      addLabels: (req) => added.push(req.labels),
+    });
+    await handlePullRequestEvent(unowned.ctx, openedPr("teammate"));
+    const otherRepo = labelCtx({
+      agentLogins: ["teammate"],
+      labels: [],
+      closing: [{ ...labeledIssue, repository: { nameWithOwner: "other/repo" } }],
+      addLabels: (req) => added.push(req.labels),
+    });
+    await handlePullRequestEvent(otherRepo.ctx, openedPr("teammate"));
+    expect(added).toEqual([]);
   });
 });
 
@@ -630,46 +860,6 @@ describe("PR management webhooks", () => {
 
     expect(mergeCalls).toBe(1);
     expect(deleteRefCalls).toBe(0);
-  });
-
-  test("ignores the App's own review ([bot] login) on a PR assigned to its slug", async () => {
-    let mergeCalls = 0;
-    const ctx = {
-      octokit: {
-        rest: {
-          pulls: {
-            get: async () => ({
-              data: prPayload({
-                assignees: [{ login: "my-app[bot]" }],
-                headRepoFullName: "base/repo",
-              }),
-            }),
-            merge: async () => {
-              mergeCalls += 1;
-              return { data: {} };
-            },
-          },
-        },
-      },
-      options: {
-        apiUrl: "http://localhost",
-        logger: { debug() {}, warn() {}, error() {}, info() {} },
-      },
-      state: makeState(),
-      userName: "my-app",
-    } as unknown as PrManagerContext;
-
-    await handleReviewEvent(
-      ctx,
-      JSON.stringify({
-        action: "submitted",
-        repository: { full_name: "base/repo" },
-        pull_request: { number: 7 },
-        review: { id: 9, state: "approved", user: { login: "my-app[bot]" } },
-      }),
-    );
-
-    expect(mergeCalls).toBe(0);
   });
 
   test("routes legacy status webhooks through associated PRs", async () => {
@@ -1407,89 +1597,6 @@ describe("management turn reaction ack", () => {
     await handleReviewEvent(reviewCtx(reactions), submittedReview("changes_requested"));
     await drainBackgroundWork(5_000);
     expect(reactions).toEqual([]);
-  });
-});
-
-describe("CI-fix human back-off with agent logins", () => {
-  function backOffCtx(input: { agentLogins?: string[]; commitAuthor: string }) {
-    const state = makeState();
-    const ctx = {
-      octokit: {
-        graphql: async () => ({
-          repository: {
-            object: {
-              statusCheckRollup: {
-                state: "FAILURE",
-                contexts: {
-                  nodes: [
-                    {
-                      __typename: "CheckRun",
-                      name: "ci",
-                      status: "COMPLETED",
-                      conclusion: "FAILURE",
-                    },
-                  ],
-                },
-              },
-            },
-          },
-        }),
-        rest: {
-          pulls: {
-            get: async () => ({ data: prPayload({ headRepoFullName: "base/repo" }) }),
-          },
-          repos: {
-            getCommit: async () => ({
-              data: { author: { login: input.commitAuthor } },
-            }),
-          },
-          issues: { createComment: async () => ({ data: {} }) },
-        },
-      },
-      options: {
-        apiUrl: "http://localhost",
-        agentLogins: input.agentLogins,
-        ciFixMaxAttempts: 3,
-        logger: quietLogger,
-        fetch: () => Promise.resolve(new Response("no", { status: 400 })),
-      },
-      state,
-      userName: "centaur-bot",
-    } as unknown as PrManagerContext;
-    return { ctx, state };
-  }
-
-  const fixCount = async (state: ReturnType<typeof makeState>) =>
-    ((await state.get("centaur-githubbot:pr:base/repo#7")) as
-      | { consecutiveCiFixes?: number }
-      | undefined)?.consecutiveCiFixes ?? 0;
-
-  const redCheck = JSON.stringify({
-    repository: { full_name: "base/repo" },
-    check_run: { head_sha: "abc123", pull_requests: [{ number: 7 }] },
-  });
-
-  test("backs off a red head commit by an unknown human", async () => {
-    const { ctx, state } = backOffCtx({ commitAuthor: "teammate" });
-    await handleCiEvent(ctx, "check_run", redCheck);
-    expect(await fixCount(state)).toBe(0);
-  });
-
-  test("a commit by a configured agent login counts as the bot's own", async () => {
-    const { ctx, state } = backOffCtx({
-      agentLogins: ["teammate"],
-      commitAuthor: "Teammate",
-    });
-    await handleCiEvent(ctx, "check_run", redCheck);
-    await drainBackgroundWork(2_000);
-    expect(await fixCount(state)).toBe(1);
-  });
-
-  test("the bot's own commit under its App [bot] login counts too", async () => {
-    const { ctx, state } = backOffCtx({ commitAuthor: "centaur-bot[bot]" });
-    await handleCiEvent(ctx, "check_run", redCheck);
-    await drainBackgroundWork(2_000);
-    expect(await fixCount(state)).toBe(1);
   });
 });
 
