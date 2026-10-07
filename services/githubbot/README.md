@@ -26,7 +26,8 @@ reviewer** like any other collaborator.
   a turn — the agent runs in a write-capable sandbox and posts its transcript back, so untrusted
   commenters can't steer it. Widen or open it with `GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS` (`*` allows
   everyone, e.g. a fully-private repo). Lifecycle triggers (assignment, review-request) are already
-  gated by GitHub permissions, so this applies only to the comment path.
+  gated by GitHub permissions, so this applies only to the comment path and to the reviewer of a
+  review that would start an address-review turn (below).
 - **`@`-mentioning the bot in the body of a newly-opened issue or PR** (the description, not a
   comment) → the same conversational turn runs, keyed to that issue/PR thread, with the reply posted
   as a comment. Only the `opened` event is handled — an edit that adds a mention later won't
@@ -97,7 +98,11 @@ management thread (`github-manage:{owner}/{repo}:{n}`); the agent does its GitHu
   Actions jobs, which is exactly what that count check catches.
 - **Address review.** A submitted review (`changes_requested` / `commented`) triggers one holistic
   turn that reads all the feedback, makes a single coherent commit, replies on each thread, resolves
-  what it addressed, and re-requests review.
+  what it addressed, and re-requests review. The reviewer must pass the same `author_association`
+  gate as a commenter, or be a GitHub App (`user.type` is `Bot` with a `[bot]` login, e.g. a code
+  review App installed on the repo); anyone else's review (an outsider's `commented` review on a
+  public repo) is logged as `githubbot_review_unauthorized_skipped` and starts no turn. Approvals are
+  unaffected: they only feed the deterministic merge gate.
 - **Merge when ready.** Deterministic — no agent. When GitHub reports the PR `mergeable_state == clean`
   the bot merges it (`GITHUBBOT_MERGE_METHOD`, default squash) and deletes the branch. `dirty` →
   conflict-resolution turn; `behind` → branch update; anything else → wait. Enabled by default for

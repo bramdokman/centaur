@@ -1,5 +1,6 @@
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { StateAdapter } from "chat";
+import { isAuthorAssociationAllowed } from "./authorization";
 import { backgroundWaitUntil } from "./context";
 import { reactWorkingOnReview, settleReviewReaction } from "./reactions";
 import { runTurnStream, turnOutputChars } from "./turn";
@@ -370,12 +371,42 @@ export async function handleReviewEvent(
     return;
   }
   if (reviewState === "changes_requested" || reviewState === "commented") {
+    // An address-review turn acts on what the reviewer wrote, in a write-capable
+    // sandbox, so the reviewer passes the same trust gate as a commenter: anyone
+    // can leave a COMMENTED review on a public repo's PR.
+    if (!isReviewerTrusted(ctx.options, reviewNode)) {
+      traceLog(ctx.options, "githubbot_review_unauthorized_skipped", undefined, {
+        association: stringValue(reviewNode.author_association) ?? "unknown",
+        pr: `${repo.owner}/${repo.repo}#${number}`,
+        review_id: reviewId,
+        reviewer: reviewer ?? "unknown",
+      });
+      return;
+    }
     fireAddressReviewTurn(ctx, repo.owner, repo.repo, pr, {
       reviewer: reviewer ?? "the reviewer",
       reviewId,
       reviewNodeId: stringValue(reviewNode.node_id),
     });
   }
+}
+
+/**
+ * Whether a review's author may drive an address-review turn: a GitHub App
+ * (`user.type` is `Bot` with a `[bot]` login — only an App installed on the
+ * repo, or GitHub's own, can review as one), or an author whose
+ * `author_association` passes the comment-path allowlist. Fails closed.
+ */
+function isReviewerTrusted(
+  options: GithubbotOptions,
+  reviewNode: JsonRecord,
+): boolean {
+  const user = isRecord(reviewNode.user) ? reviewNode.user : undefined;
+  const login = stringValue(user?.login);
+  if (stringValue(user?.type) === "Bot" && login?.toLowerCase().endsWith("[bot]")) {
+    return true;
+  }
+  return isAuthorAssociationAllowed(stringValue(reviewNode.author_association), options);
 }
 
 /** check_run / check_suite / workflow_run completed -> CI-settled gate. */

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   authorAssociationFromRaw,
   DEFAULT_ALLOWED_AUTHOR_ASSOCIATIONS,
+  isAuthorAssociationAllowed,
   isCommentAuthorAllowed,
   resolveAllowedAuthorAssociations,
 } from "../src/authorization";
@@ -39,6 +40,25 @@ describe("resolveAllowedAuthorAssociations", () => {
       "OWNER",
       "MEMBER",
     ]);
+  });
+});
+
+describe("isAuthorAssociationAllowed", () => {
+  test("allows the default set, case-insensitively, and denies the rest", () => {
+    for (const assoc of ["OWNER", "member", "Collaborator"]) {
+      expect(isAuthorAssociationAllowed(assoc, {})).toBe(true);
+    }
+    for (const assoc of ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE"]) {
+      expect(isAuthorAssociationAllowed(assoc, {})).toBe(false);
+    }
+  });
+
+  test("fails closed on a missing association unless '*' is configured", () => {
+    expect(isAuthorAssociationAllowed(undefined, {})).toBe(false);
+    expect(isAuthorAssociationAllowed("", {})).toBe(false);
+    expect(
+      isAuthorAssociationAllowed(undefined, { allowedAuthorAssociations: ["*"] }),
+    ).toBe(true);
   });
 });
 

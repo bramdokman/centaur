@@ -44,19 +44,26 @@ export function resolveAllowedAuthorAssociations(
 }
 
 /**
- * Whether a comment's author is allowed to drive a turn. Fails closed: an
- * association we can't read (an unexpected payload shape) is treated as
- * untrusted rather than waved through.
+ * Whether an `author_association` value is allowed to drive a turn. Fails
+ * closed: an association we can't read (an unexpected payload shape) is treated
+ * as untrusted rather than waved through.
  */
-export function isCommentAuthorAllowed(
-  raw: unknown,
+export function isAuthorAssociationAllowed(
+  association: string | undefined,
   options: Pick<GithubbotOptions, "allowedAuthorAssociations">,
 ): boolean {
   const allowed = resolveAllowedAuthorAssociations(
     options.allowedAuthorAssociations,
   );
   if (allowed.includes(ALLOW_ALL)) return true;
-  const association = authorAssociationFromRaw(raw);
   if (!association) return false;
   return allowed.includes(association.toUpperCase());
+}
+
+/** Whether a comment's author is allowed to drive a turn (see above). */
+export function isCommentAuthorAllowed(
+  raw: unknown,
+  options: Pick<GithubbotOptions, "allowedAuthorAssociations">,
+): boolean {
+  return isAuthorAssociationAllowed(authorAssociationFromRaw(raw), options);
 }
