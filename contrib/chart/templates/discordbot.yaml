@@ -24,6 +24,7 @@ spec:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "discordbot") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+{{- include "centaur.podScheduling" (dict "values" .Values.discordbot "indent" 6) }}
       # Allow the Gateway to drain and close cleanly on SIGTERM (protects the IDENTIFY budget).
       terminationGracePeriodSeconds: 35
       {{- with .Values.global.imagePullSecrets }}

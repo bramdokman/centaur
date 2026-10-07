@@ -50,6 +50,7 @@ spec:
       # SIGTERM so a deploy doesn't drop a running CI fix / review / issue turn.
       terminationGracePeriodSeconds: {{ .Values.githubbot.terminationGracePeriodSeconds }}
       automountServiceAccountToken: false
+{{- include "centaur.podScheduling" (dict "values" .Values.githubbot "indent" 6) }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
 {{ toYaml . | nindent 8 }}

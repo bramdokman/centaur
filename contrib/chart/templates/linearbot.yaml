@@ -19,6 +19,7 @@ spec:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "linearbot") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+{{- include "centaur.podScheduling" (dict "values" .Values.linearbot "indent" 6) }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
 {{ toYaml . | nindent 8 }}

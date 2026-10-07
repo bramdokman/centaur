@@ -686,6 +686,11 @@ apiRs:
 # Chat SDK Slackbot v2. Forwards Slack events to the api-rs control plane
 # (:8080) and streams responses back. Listens on :3001.
 slackbotv2:
+  # Node steering for the slackbotv2 pod. Empty values leave placement to the
+  # default scheduler.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   enabled: true
   replicaCount: 1
   image:
@@ -764,6 +769,11 @@ slackbotv2:
 # Disabled by default: requires the LINEAR_ACCESS_TOKEN / LINEARBOT_WEBHOOK_SECRET
 # secrets from the Linear OAuth app install (see contrib/scripts/bootstrap-k8s-secrets.sh).
 linearbot:
+  # Node steering for the linearbot pod. Empty values leave placement to the
+  # default scheduler.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   enabled: false
   replicaCount: 1
   image:
@@ -790,6 +800,11 @@ linearbot:
 # (see contrib/scripts/bootstrap-k8s-secrets.sh). userName must be the bot
 # account's GitHub login so @-mention and review-request matching work.
 githubbot:
+  # Node steering for the githubbot pod. Empty values leave placement to the
+  # default scheduler.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   enabled: false
   replicaCount: 1
   image:
@@ -830,6 +845,11 @@ githubbot:
 # persistent Discord Gateway connection. Off by default; needs a Discord app + Message Content
 # Intent + a guild allowlist. Always exactly one replica (singleton Gateway session).
 discordbot:
+  # Node steering for the discordbot pod. Empty values leave placement to the
+  # default scheduler.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   enabled: false
   image:
     repository: centaur-discordbot
@@ -849,6 +869,11 @@ discordbot:
 # api-rs control plane (:8080) and renders session events back to Teams. Off by
 # default; needs a Teams app registration and Bot Framework endpoint routing.
 teamsbot:
+  # Node steering for the teamsbot pod. Empty values leave placement to the
+  # default scheduler.
+  nodeSelector: {}
+  affinity: {}
+  tolerations: []
   enabled: false
   replicaCount: 1
   image:

@@ -19,6 +19,7 @@ spec:
 {{ include "centaur.componentSelectorLabels" (dict "root" . "component" "teamsbot") | nindent 8 }}
     spec:
       automountServiceAccountToken: false
+{{- include "centaur.podScheduling" (dict "values" .Values.teamsbot "indent" 6) }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
 {{ toYaml . | nindent 8 }}

@@ -29,6 +29,7 @@ spec:
         centaur.ai/metrics: slackbotv2
     spec:
       automountServiceAccountToken: false
+{{- include "centaur.podScheduling" (dict "values" .Values.slackbotv2 "indent" 6) }}
       {{- with .Values.global.imagePullSecrets }}
       imagePullSecrets:
 {{ toYaml . | nindent 8 }}
