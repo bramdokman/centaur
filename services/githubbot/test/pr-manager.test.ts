@@ -533,6 +533,10 @@ describe("isOwnedPr", () => {
   test("not owned when there are no assignees", () => {
     expect(isOwnedPr({ assignees: [], userName: "centaur-bot" })).toBe(false);
   });
+
+  test("an App's [bot] assignee counts for its bare slug", () => {
+    expect(isOwnedPr({ assignees: ["my-app[bot]"], userName: "my-app" })).toBe(true);
+  });
 });
 
 describe("decideMerge", () => {
@@ -620,6 +624,46 @@ describe("PR management webhooks", () => {
 
     expect(mergeCalls).toBe(1);
     expect(deleteRefCalls).toBe(0);
+  });
+
+  test("ignores the App's own review ([bot] login) on a PR assigned to its slug", async () => {
+    let mergeCalls = 0;
+    const ctx = {
+      octokit: {
+        rest: {
+          pulls: {
+            get: async () => ({
+              data: prPayload({
+                assignees: [{ login: "my-app[bot]" }],
+                headRepoFullName: "base/repo",
+              }),
+            }),
+            merge: async () => {
+              mergeCalls += 1;
+              return { data: {} };
+            },
+          },
+        },
+      },
+      options: {
+        apiUrl: "http://localhost",
+        logger: { debug() {}, warn() {}, error() {}, info() {} },
+      },
+      state: makeState(),
+      userName: "my-app",
+    } as unknown as PrManagerContext;
+
+    await handleReviewEvent(
+      ctx,
+      JSON.stringify({
+        action: "submitted",
+        repository: { full_name: "base/repo" },
+        pull_request: { number: 7 },
+        review: { id: 9, state: "approved", user: { login: "my-app[bot]" } },
+      }),
+    );
+
+    expect(mergeCalls).toBe(0);
   });
 
   test("routes legacy status webhooks through associated PRs", async () => {
@@ -1287,6 +1331,7 @@ describe("management turn reaction ack", () => {
       repository: { full_name: "base/repo" },
       pull_request: { number: 7 },
       review: {
+        author_association: "MEMBER",
         id: 55,
         node_id: nodeId,
         state,
@@ -1356,5 +1401,77 @@ describe("management turn reaction ack", () => {
     await handleReviewEvent(reviewCtx(reactions), submittedReview("changes_requested"));
     await drainBackgroundWork(5_000);
     expect(reactions).toEqual([]);
+  });
+});
+
+describe("CI-fix human back-off", () => {
+  function backOffCtx(input: { commitAuthor: string }) {
+    const state = makeState();
+    const ctx = {
+      octokit: {
+        graphql: async () => ({
+          repository: {
+            object: {
+              statusCheckRollup: {
+                state: "FAILURE",
+                contexts: {
+                  nodes: [
+                    {
+                      __typename: "CheckRun",
+                      name: "ci",
+                      status: "COMPLETED",
+                      conclusion: "FAILURE",
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        }),
+        rest: {
+          pulls: {
+            get: async () => ({ data: prPayload({ headRepoFullName: "base/repo" }) }),
+          },
+          repos: {
+            getCommit: async () => ({
+              data: { author: { login: input.commitAuthor } },
+            }),
+          },
+          issues: { createComment: async () => ({ data: {} }) },
+        },
+      },
+      options: {
+        apiUrl: "http://localhost",
+        ciFixMaxAttempts: 3,
+        logger: quietLogger,
+        fetch: () => Promise.resolve(new Response("no", { status: 400 })),
+      },
+      state,
+      userName: "centaur-bot",
+    } as unknown as PrManagerContext;
+    return { ctx, state };
+  }
+
+  const fixCount = async (state: ReturnType<typeof makeState>) =>
+    ((await state.get("centaur-githubbot:pr:base/repo#7")) as
+      | { consecutiveCiFixes?: number }
+      | undefined)?.consecutiveCiFixes ?? 0;
+
+  const redCheck = JSON.stringify({
+    repository: { full_name: "base/repo" },
+    check_run: { head_sha: "abc123", pull_requests: [{ number: 7 }] },
+  });
+
+  test("backs off a red head commit by an unknown human", async () => {
+    const { ctx, state } = backOffCtx({ commitAuthor: "teammate" });
+    await handleCiEvent(ctx, "check_run", redCheck);
+    expect(await fixCount(state)).toBe(0);
+  });
+
+  test("the bot's own commit under its App [bot] login counts too", async () => {
+    const { ctx, state } = backOffCtx({ commitAuthor: "centaur-bot[bot]" });
+    await handleCiEvent(ctx, "check_run", redCheck);
+    await drainBackgroundWork(2_000);
+    expect(await fixCount(state)).toBe(1);
   });
 });

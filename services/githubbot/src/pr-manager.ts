@@ -1,6 +1,7 @@
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { StateAdapter } from "chat";
 import { backgroundWaitUntil } from "./context";
+import { isBotLogin } from "./identity";
 import { reactWorkingOnReview, settleReviewReaction } from "./reactions";
 import { runTurnStream, turnOutputChars } from "./turn";
 import {
@@ -56,8 +57,7 @@ export function isOwnedPr(input: {
   assignees: string[];
   userName: string;
 }): boolean {
-  const target = input.userName.toLowerCase();
-  return input.assignees.some((login) => login.toLowerCase() === target);
+  return input.assignees.some((login) => isBotLogin(login, input.userName));
 }
 
 export type MergeDecision =
@@ -354,7 +354,7 @@ export async function handleReviewEvent(
   const pr = await fetchPr(ctx, repo.owner, repo.repo, number);
   if (!pr || !owns(ctx, pr)) return;
   // Never act on the bot's own review (it shouldn't review its own PRs anyway).
-  if (reviewer && reviewer.toLowerCase() === ctx.userName.toLowerCase()) return;
+  if (isBotLogin(reviewer, ctx.userName)) return;
 
   if (
     !(await claim(
@@ -453,7 +453,7 @@ async function processCi(
   // human has explicitly handed it over and we fix it regardless of who pushed).
   if (!force) {
     const headAuthor = await commitAuthor(ctx, owner, repo, headSha);
-    if (headAuthor && headAuthor.toLowerCase() !== ctx.userName.toLowerCase()) {
+    if (headAuthor && !isBotLogin(headAuthor, ctx.userName)) {
       traceLog(ctx.options, "githubbot_ci_human_commit_skipped", trace, {
         author: headAuthor,
       });

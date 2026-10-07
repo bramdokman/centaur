@@ -1,13 +1,39 @@
 import { readFileSync } from "node:fs";
+import { discoverInstallationId, normalizePrivateKey } from "./app-auth";
 import { drainBackgroundWork } from "./context";
 import { createGithubbot, type GithubbotOptions } from "./index";
 
 const port = numberEnv("PORT", 3001);
 const apiUrl = stringEnv("CENTAUR_API_URL", "http://127.0.0.1:8080");
 
-// Personal access token for the bot's GitHub teammate account (the bot acts as a
-// real GitHub user — it can be requested as a reviewer, @-mentioned, assigned).
-const token = requiredEnv("GITHUB_TOKEN");
+// The bot's GitHub identity: either a GitHub App (acts as `<slug>[bot]`), or a
+// personal access token for a teammate account (a real GitHub user — it can be
+// requested as a reviewer, @-mentioned, assigned). App credentials win.
+const appId = optionalEnv("GITHUBBOT_APP_ID") ?? optionalEnv("GITHUB_APP_ID");
+const appPrivateKeyRaw =
+  optionalEnv("GITHUBBOT_APP_PRIVATE_KEY") ?? optionalEnv("GITHUB_PRIVATE_KEY");
+let githubApp: GithubbotOptions["app"];
+let token: string | undefined;
+if (appId || appPrivateKeyRaw) {
+  if (!appId || !appPrivateKeyRaw) {
+    throw new Error(
+      "GitHub App auth needs both GITHUBBOT_APP_ID and GITHUBBOT_APP_PRIVATE_KEY",
+    );
+  }
+  const privateKey = normalizePrivateKey(appPrivateKeyRaw);
+  const installationId =
+    optionalNumberEnv("GITHUBBOT_APP_INSTALLATION_ID") ??
+    optionalNumberEnv("GITHUB_INSTALLATION_ID") ??
+    (await discoverInstallationId({
+      apiUrl: optionalEnv("GITHUB_API_URL"),
+      appId,
+      privateKey,
+      repository: optionalEnv("GITHUBBOT_APP_REPOSITORY"),
+    }));
+  githubApp = { appId, installationId, privateKey };
+} else {
+  token = requiredEnv("GITHUB_TOKEN");
+}
 
 // Signing secret configured on the GitHub repo/org webhook. The adapter verifies
 // comment webhooks; githubbot verifies the pull_request (review-request) webhook.
@@ -131,6 +157,7 @@ const options: GithubbotOptions = {
   managementPrompt,
   stateKeyPrefix: optionalEnv("GITHUBBOT_STATE_KEY_PREFIX"),
   token,
+  app: githubApp,
   userName,
   webhookSecret,
   logger: consoleLogger,
@@ -142,6 +169,11 @@ const server = Bun.serve({ port, fetch: app.fetch });
 log("info", "githubbot_started", {
   port: server.port,
   api_url: apiUrl,
+  auth: githubApp ? "app" : "token",
+  ...(githubApp
+    ? { app_id: githubApp.appId, installation_id: githubApp.installationId }
+    : {}),
+  user_name: userName,
 });
 
 // How long to let in-flight turns finish on SIGTERM before exiting. Default 25s

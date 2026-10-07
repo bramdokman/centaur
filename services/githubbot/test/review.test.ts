@@ -177,3 +177,27 @@ describe("handleReviewRequest team requests", () => {
     ).toBeNull();
   });
 });
+
+describe("handleReviewRequest with a GitHub App bot", () => {
+  const appInput = {
+    ...input,
+    botUserName: "my-app",
+    options: { ...options, app: { appId: "1", installationId: 2, privateKey: "k" } },
+    state: stubState(),
+  } as typeof input;
+
+  test("matches the App's [bot] login as the requested reviewer", () => {
+    expect(handleReviewRequest(reviewRequestedBody("my-app[bot]"), appInput)).not.toBeNull();
+  });
+
+  test("ignores team requests (an App can't be a team member)", () => {
+    const body = JSON.stringify({
+      action: "review_requested",
+      pull_request: { number: 7, head: { sha: "abc" } },
+      repository: { full_name: "0xSplits/centaur" },
+      requested_team: { slug: "reviewers" },
+      sender: { login: "someone" },
+    });
+    expect(handleReviewRequest(body, appInput)).toBeNull();
+  });
+});

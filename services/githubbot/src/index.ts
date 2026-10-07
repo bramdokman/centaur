@@ -17,6 +17,7 @@ import {
 } from "./authorization";
 import { handleBodyMention } from "./body-mention";
 import { backgroundWaitUntil, requestContext, waitUntil } from "./context";
+import { botMentionName, isBotLogin } from "./identity";
 import {
   handleIssueEvent,
   isIssueAssignedToBot,
@@ -65,10 +66,12 @@ const POSTGRES_CONNECT_MAX_DELAY_MS = 10_000;
 const DEDUP_WINDOW = 200;
 
 export function createGithubbot(options: GithubbotOptions): Githubbot {
-  const userName = options.userName ?? "github-bot";
+  // Mention matching runs on the bare name: people write `@my-app` for a GitHub
+  // App whose acting login is `my-app[bot]`. Login comparisons accept both.
+  const userName = botMentionName(options.userName ?? "github-bot");
   const logger = options.logger ?? noopLogger;
   const github = createGitHubAdapter({
-    token: options.token,
+    ...githubAuthConfig(options),
     webhookSecret: options.webhookSecret,
     userName,
     ...(options.botUserId ? { botUserId: Number(options.botUserId) } : {}),
@@ -208,6 +211,30 @@ export function createGithubbot(options: GithubbotOptions): Githubbot {
   return { app, chat };
 }
 
+/**
+ * The adapter's auth: a teammate PAT, or a GitHub App pinned to one
+ * installation (single-tenant, so the Octokit also works outside comment
+ * webhooks, where the lifecycle handlers and PR manager use it).
+ */
+export function githubAuthConfig(
+  options: Pick<GithubbotOptions, "app" | "token">,
+):
+  | { token: string }
+  | { appId: string; installationId: number; privateKey: string } {
+  if (options.app && options.token) {
+    throw new Error("githubbot: set either a GitHub token or GitHub App credentials, not both");
+  }
+  if (options.app) {
+    return {
+      appId: options.app.appId,
+      installationId: options.app.installationId,
+      privateKey: options.app.privateKey,
+    };
+  }
+  if (options.token) return { token: options.token };
+  throw new Error("githubbot: a GitHub token or GitHub App credentials are required");
+}
+
 type MessageHandlerInput = {
   adapter: GitHubAdapter;
   mode: "execute" | "append";
@@ -229,7 +256,12 @@ async function handleMessage(
 ): Promise<void> {
   const { adapter, mode, options } = input;
   const logger = options.logger ?? noopLogger;
-  if (message.author.isMe) {
+  // Loop guard. The adapter sets isMe from the numeric bot id; the login check
+  // also covers an App's `<slug>[bot]` comments if the id was never detected.
+  if (
+    message.author.isMe ||
+    isBotLogin(message.author.userName, input.prManagerCtx.userName)
+  ) {
     traceLog(options, "githubbot_self_message_skipped", undefined, {
       message_id: message.id,
       thread_id: thread.id,

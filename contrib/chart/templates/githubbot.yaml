@@ -67,6 +67,25 @@ spec:
             # the deployment's default harness.
             - name: GITHUBBOT_DEFAULT_HARNESS
               value: {{ .Values.sandbox.harnessEngine | quote }}
+{{- if .Values.githubbot.app.id }}
+            # GitHub App identity: the bot acts as `<slug>[bot]` through one
+            # installation (discovered at boot when installationId is empty).
+            - name: GITHUBBOT_APP_ID
+              value: {{ .Values.githubbot.app.id | quote }}
+            - name: GITHUBBOT_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "centaur.secretEnvName" . }}
+                  key: {{ printf "%s%s" .Values.secretManager.envPrefix .Values.githubbot.app.privateKeySecretKey }}
+{{- if .Values.githubbot.app.installationId }}
+            - name: GITHUBBOT_APP_INSTALLATION_ID
+              value: {{ .Values.githubbot.app.installationId | quote }}
+{{- end }}
+{{- if .Values.githubbot.app.repository }}
+            - name: GITHUBBOT_APP_REPOSITORY
+              value: {{ .Values.githubbot.app.repository | quote }}
+{{- end }}
+{{- else }}
             # Personal access token for the bot's GitHub teammate account — kept
             # distinct from the sandbox tool token so the bot acts as its own
             # GitHub user (requestable as a reviewer, @-mentionable).
@@ -75,6 +94,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "centaur.secretEnvName" . }}
                   key: {{ printf "%sGITHUBBOT_TOKEN" .Values.secretManager.envPrefix }}
+{{- end }}
+{{- if .Values.githubbot.botUserId }}
+            - name: GITHUBBOT_USER_ID
+              value: {{ .Values.githubbot.botUserId | quote }}
+{{- end }}
             # githubbot's own webhook signing secret (the GitHub repo/org webhook).
             - name: GITHUB_WEBHOOK_SECRET
               valueFrom:

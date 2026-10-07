@@ -1,6 +1,7 @@
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { StateAdapter } from "chat";
 import { backgroundWaitUntil } from "./context";
+import { isBotLogin } from "./identity";
 import { reactWorkingOnSubject, settleSubjectReaction } from "./reactions";
 import { DEFAULT_REVIEW_PROMPT } from "./review-prompt";
 import { runTurnStream, turnOutputChars } from "./turn";
@@ -90,9 +91,12 @@ export function handleReviewRequest(
   // belongs to a requested team (resolved asynchronously below). A request that
   // names a different individual reviewer and no team is not ours.
   const reviewer = stringValue(payload.requested_reviewer?.login);
-  const directMatch =
-    !!reviewer && reviewer.toLowerCase() === input.botUserName.toLowerCase();
-  const teamSlug = stringValue(payload.requested_team?.slug);
+  const directMatch = isBotLogin(reviewer, input.botUserName);
+  // A GitHub App can't be a team member, and its bare slug may be some other
+  // user's login, so team requests only count for a user-account bot.
+  const teamSlug = input.options.app
+    ? undefined
+    : stringValue(payload.requested_team?.slug);
   if (!directMatch && !teamSlug) return null;
 
   const threadKey = reviewThreadKey(owner, repo, number);

@@ -1,6 +1,7 @@
 import { resolveAllowedAuthorAssociations } from "./authorization";
 import { backgroundWaitUntil } from "./context";
 import { buildCommentReplyBody } from "./comment-bot";
+import { botMentionName, isBotLogin } from "./identity";
 import type { PrManagerContext } from "./pr-manager";
 import { reactWorkingOnSubject, settleSubjectReaction } from "./reactions";
 import { githubContextPreamble, runTurnStream } from "./turn";
@@ -49,7 +50,7 @@ export function handleBodyMention(
 
   // Never act on the bot's own issue/PR (it opens PRs during issue work).
   const author = stringValue(isRecord(node.user) ? node.user.login : undefined);
-  if (author && author.toLowerCase() === ctx.userName.toLowerCase()) return null;
+  if (isBotLogin(author, ctx.userName)) return null;
 
   // Same trust gate as the comment path, read from the issue/PR author.
   const allowed = resolveAllowedAuthorAssociations(
@@ -148,9 +149,13 @@ export function handleBodyMention(
 
 const BODY_MENTION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** Whether `body` contains a standalone @-mention of `userName` (case-insensitive). */
+/**
+ * Whether `body` contains a standalone @-mention of `userName`
+ * (case-insensitive). A GitHub App is mentioned by its bare slug (`@my-app`);
+ * an explicit `@my-app[bot]` matches too.
+ */
 export function mentionsBot(body: string, userName: string): boolean {
-  const escaped = userName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const escaped = botMentionName(userName).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^a-zA-Z0-9_/-])@${escaped}(?![a-zA-Z0-9_-])`, "i").test(
     body,
   );

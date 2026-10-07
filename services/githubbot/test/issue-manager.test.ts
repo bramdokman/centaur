@@ -19,6 +19,10 @@ describe("isAssignedToBot", () => {
   test("false with no assignees", () => {
     expect(isAssignedToBot([], "centaur-bot")).toBe(false);
   });
+
+  test("matches an App's [bot] login against its bare slug", () => {
+    expect(isAssignedToBot(["my-app[bot]"], "my-app")).toBe(true);
+  });
 });
 
 describe("assigneeLogins", () => {

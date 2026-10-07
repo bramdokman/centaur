@@ -1,4 +1,5 @@
 import { backgroundWaitUntil } from "./context";
+import { isBotLogin } from "./identity";
 import { DEFAULT_ISSUE_PROMPT } from "./issue-prompt";
 import type { PrManagerContext } from "./pr-manager";
 import { reactWorkingOnSubject, settleSubjectReaction } from "./reactions";
@@ -260,8 +261,7 @@ function issueTriggerMessage(input: {
 type JsonRecord = Record<string, unknown>;
 
 export function isAssignedToBot(assignees: string[], userName: string): boolean {
-  const target = userName.toLowerCase();
-  return assignees.some((login) => login.toLowerCase() === target);
+  return assignees.some((login) => isBotLogin(login, userName));
 }
 
 export function assigneeLogins(value: unknown): string[] {

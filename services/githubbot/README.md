@@ -132,7 +132,21 @@ sandbox. Both assume the **single replica** the chart runs (`replicaCount: 1`).
 
 ## Auth
 
-A personal access token for the bot's GitHub teammate account is required (`GITHUB_TOKEN`). As a
+Two identities are supported: a **PAT teammate** (below), or a **GitHub App**.
+
+**GitHub App.** Set `GITHUBBOT_APP_ID` and `GITHUBBOT_APP_PRIVATE_KEY` (PEM; `\n` escapes are accepted)
+instead of `GITHUB_TOKEN`. The bot then comments, reacts and labels as `<slug>[bot]` through a single
+installation: `GITHUBBOT_APP_INSTALLATION_ID`, or discovered at boot from the App JWT (the App's only
+installation, or the one on `GITHUBBOT_APP_REPOSITORY`). Set `GITHUB_BOT_USERNAME` to the slug (people
+mention an App as `@<slug>`; `<slug>[bot]` is accepted too) and `GITHUBBOT_USER_ID` to the bot user's
+id (`gh api 'users/<slug>[bot]' --jq .id`) for the self-message guard; comments from the `[bot]` login
+are skipped either way. An App can't be assigned or requested as a reviewer (team review requests are
+ignored in App mode), so it is driven through `@`-mentions. Permissions: Issues and Pull requests
+read/write; Checks, Commit statuses, Actions, Contents and Metadata read. Auto-merge, branch updates
+and branch deletion need Contents write; without it, keep `GITHUBBOT_AUTO_MERGE=false`. The sandbox
+keeps its own `GITHUB_TOKEN` for git and `gh`.
+
+**PAT teammate.** A personal access token for the bot's GitHub teammate account (`GITHUB_TOKEN`). As a
 normal user account it is natively mentionable, assignable, and requestable as a reviewer, and the
 token inherits that user's permissions. Scopes: **`repo`** (read PRs/issues, post and edit comments,
 add reactions) — and, when the agent pushes branches or opens PRs from its sandbox, **`workflow`**.
@@ -141,8 +155,9 @@ Keep this distinct from the `GITHUB_TOKEN` used by the repo-cache / sandbox tool
 agent's git-operations token; this one is the bot's own identity. The chart wires githubbot's token
 from a separate `GITHUBBOT_TOKEN` secret key to avoid collision.
 
-GitHub App auth is also supported by the adapter (`GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY`), but the
-PAT-teammate model is what we run.
+In the chart, App mode is `githubbot.app.id` (plus `app.installationId`, `app.privateKeySecretKey`),
+with `githubbot.botUserId`. The App's own webhook
+can stay off: a repo or org webhook delivering the events below works the same.
 
 Webhook events to subscribe: **Issue comments**, **Pull request review comments**, **Issues**, **Pull
 requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Workflow runs**
@@ -152,9 +167,12 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 
 | Var | Required | Notes |
 |-----|----------|-------|
-| `GITHUB_TOKEN` | ✅ | PAT for the bot's teammate account. |
+| `GITHUB_TOKEN` | ✅ (PAT mode) | PAT for the bot's teammate account. |
+| `GITHUBBOT_APP_ID` / `GITHUBBOT_APP_PRIVATE_KEY` | ✅ (App mode) | GitHub App id and PEM private key (or `GITHUB_APP_ID` / `GITHUB_PRIVATE_KEY`). Takes precedence over `GITHUB_TOKEN`. |
+| `GITHUBBOT_APP_INSTALLATION_ID` | — | Installation to act as (or `GITHUB_INSTALLATION_ID`). Unset: discovered at boot. |
+| `GITHUBBOT_APP_REPOSITORY` | — | `owner/repo` whose installation discovery picks when the App has several. |
 | `GITHUB_WEBHOOK_SECRET` | ✅ | Webhook signing secret (or `GITHUBBOT_WEBHOOK_SECRET`). |
-| `GITHUB_BOT_USERNAME` | ✅ | The bot account's GitHub login — drives `@`-mention and requested-reviewer matching (or `GITHUBBOT_USER_NAME`). |
+| `GITHUB_BOT_USERNAME` | ✅ | The bot account's GitHub login (an App's slug) — drives `@`-mention and requested-reviewer matching (or `GITHUBBOT_USER_NAME`). |
 | `GITHUBBOT_DATABASE_URL` | ✅ | Postgres for chat-SDK state (falls back to `DATABASE_URL` / `POSTGRES_URL`). |
 | `CENTAUR_API_URL` | — | api-rs control plane, default `http://127.0.0.1:8080`. |
 | `GITHUBBOT_API_KEY` | — | Dedicated bearer sent to api-rs. |
@@ -182,7 +200,8 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 
 ## Tests
 
-`bun test test` — unit tests for the override flag parser, the GitHub thread-key parsing / context
+`bun test test` — unit tests for App auth (installation discovery, a webhook round trip in App mode,
+the `[bot]` loop guard), bot-login matching, the override flag parser, the GitHub thread-key parsing / context
 preamble, the review-request trigger gating (incl. team requests), the issue-assignment gating, the
 v2 PR-manager decision logic (CI evaluation, centaur-skip checks, the Actions fallback for unreadable check detail, assignment-based ownership, merge
 gating, the CI-fix counter / escalation, and the merge-claim release-on-failure), the

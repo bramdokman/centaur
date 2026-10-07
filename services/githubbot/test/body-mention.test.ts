@@ -9,6 +9,12 @@ describe("mentionsBot", () => {
     expect(mentionsBot("ping\n@centaur-bot", "centaur-bot")).toBe(true);
   });
 
+  test("an App is mentioned by its bare slug, or explicitly with [bot]", () => {
+    expect(mentionsBot("hi @my-app fix this", "my-app[bot]")).toBe(true);
+    expect(mentionsBot("hi @my-app[bot] fix this", "my-app")).toBe(true);
+    expect(mentionsBot("hi @my-app-two", "my-app[bot]")).toBe(false);
+  });
+
   test("does not match substrings, emails, or absence", () => {
     expect(mentionsBot("see @centaur-bot-helper", "centaur-bot")).toBe(false);
     expect(mentionsBot("mail me@centaur-bot.com", "centaur-bot")).toBe(false);
@@ -119,6 +125,18 @@ describe("handleBodyMention", () => {
         makeCtx({ reactions: 0, comments: 0 }),
         "pull_request",
         openedPr("@centaur-bot do it", "MEMBER", "centaur-bot"),
+      ),
+    ).toBeNull();
+  });
+
+  test("ignores an App bot's own PR ([bot] login vs bare slug)", () => {
+    const ctx = makeCtx({ reactions: 0, comments: 0 });
+    (ctx as { userName: string }).userName = "my-app";
+    expect(
+      handleBodyMention(
+        ctx,
+        "pull_request",
+        openedPr("@my-app do it", "NONE", "my-app[bot]"),
       ),
     ).toBeNull();
   });

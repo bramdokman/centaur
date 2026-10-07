@@ -786,9 +786,10 @@ linearbot:
 # webhooks on /api/webhooks/github (the @chat-adapter/github adapter), answers in
 # the comment thread, and runs a review when the bot account is requested as a
 # reviewer. Forwards sessions to the api-rs control plane (:8080). Disabled by
-# default: requires the GITHUBBOT_TOKEN (PAT) and GITHUBBOT_WEBHOOK_SECRET secrets
-# (see contrib/scripts/bootstrap-k8s-secrets.sh). userName must be the bot
-# account's GitHub login so @-mention and review-request matching work.
+# default: requires the GITHUBBOT_TOKEN (PAT) — or, with githubbot.app.id set, the
+# GITHUBBOT_APP_PRIVATE_KEY — and GITHUBBOT_WEBHOOK_SECRET secrets (see
+# contrib/scripts/bootstrap-k8s-secrets.sh). userName must be the bot account's
+# GitHub login (for an App, its slug) so @-mention and review-request matching work.
 githubbot:
   enabled: false
   replicaCount: 1
@@ -797,7 +798,23 @@ githubbot:
     tag: latest
     pullPolicy: Always
   userName: ""
+  # GitHub App identity instead of a PAT teammate. With id set, the bot acts as
+  # `<slug>[bot]` through one installation and GITHUBBOT_TOKEN is not used; set
+  # userName to the App's slug. An App can't be assigned or requested as a
+  # reviewer, so it is driven through @-mentions. installationId is optional:
+  # empty discovers it at boot (the App's only installation, or the one on
+  # `repository`). privateKeySecretKey names the PEM's key in the env secret.
+  app:
+    id: ""
+    installationId: ""
+    repository: ""
+    privateKeySecretKey: GITHUBBOT_APP_PRIVATE_KEY
+  # Bot's numeric GitHub user id for self-message detection; empty = detect at
+  # boot. For an App: `gh api users/<slug>%5Bbot%5D --jq .id`.
+  botUserId: ""
   # v2 PR self-management (only acts on PRs assigned to the bot account).
+  # Merging needs contents:write, which a read-only App lacks; keep autoMerge
+  # off for such an App.
   # Auto-merge respects branch protection and is paused per-PR by the hold label
   # / draft status.
   autoMerge: true

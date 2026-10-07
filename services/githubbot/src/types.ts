@@ -156,8 +156,24 @@ export type GithubbotOptions = {
   holdLabel?: string;
   /** Merge method for auto-merge: "merge" | "squash" | "rebase". Default "squash". */
   mergeMethod?: "merge" | "squash" | "rebase";
-  /** Personal access token for the bot's GitHub teammate account. */
-  token: string;
+  /**
+   * Personal access token for the bot's GitHub teammate account. Exactly one of
+   * `token` or `app` must be set.
+   */
+  token?: string;
+  /**
+   * GitHub App credentials: the bot acts as `<slug>[bot]` through one fixed
+   * installation. Exactly one of `token` or `app` must be set.
+   */
+  app?: {
+    appId: string;
+    privateKey: string;
+    installationId: number;
+  };
+  /**
+   * The bot's GitHub login. For an App, the slug (`my-app`) or the bot login
+   * (`my-app[bot]`); mention matching uses the bare slug either way.
+   */
   userName?: string;
   /**
    * GitHub `author_association` values allowed to drive the conversational
