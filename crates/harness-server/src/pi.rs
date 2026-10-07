@@ -27,8 +27,9 @@ use crate::{
 const TOOLS: &str = "read,bash,edit,write,codemode";
 /// Thinking level for turns without a per-turn override.
 const DEFAULT_THINKING_LEVEL: &str = "medium";
-/// Models Centaur supports on Pi, matching the Claude and GPT models the chat
-/// ingresses offer. Each needs its provider's `api_key` credential.
+/// Models Centaur supports on Pi: the Claude and GPT models the chat
+/// ingresses offer, plus Z.ai's GLM models through Pi's built-in `zai`
+/// provider. Each needs its provider's API key credential.
 const MODELS: &[(&str, &str)] = &[
     ("anthropic", "claude-fable-5"),
     ("anthropic", "claude-haiku-4-5"),
@@ -50,6 +51,11 @@ const MODELS: &[(&str, &str)] = &[
     ("openai", "gpt-6-astra"),
     ("openai", "gpt-6-luna"),
     ("openai", "gpt-6-sol"),
+    ("zai", "glm-4.7"),
+    ("zai", "glm-5-turbo"),
+    ("zai", "glm-5.2"),
+    ("zai", "glm-5.3"),
+    ("zai", "glm-5.3-flash"),
 ];
 const THINKING_LEVELS: &[&str] = &["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
@@ -363,6 +369,8 @@ mod tests {
             "anthropic/claude-sonnet-5",
             "claude-sonnet-5",
             "openai/gpt-5.5",
+            "zai/glm-5.3",
+            "glm-5.3",
         ] {
             assert_eq!(check_model(model), Ok(()), "{model}");
         }
@@ -371,6 +379,8 @@ mod tests {
             "openai/claude-sonnet-5",
             "openai/o3",
             "openai/gpt-5.5:high",
+            "openai/glm-5.3",
+            "zai/glm-5",
         ] {
             assert!(check_model(model).is_err(), "{model}");
         }

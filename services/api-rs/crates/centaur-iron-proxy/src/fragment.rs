@@ -175,6 +175,7 @@ pub fn harness_auth_fragment(engine: &str, auth_mode: &str) -> Result<Option<Pro
         ("hermes", "api_key") => HERMES_API_KEY_FRAGMENT,
         ("openrouter", "api_key") => OPENROUTER_API_KEY_FRAGMENT,
         ("meta-ai", "api_key") => META_AI_API_KEY_FRAGMENT,
+        ("zai", "api_key") => ZAI_API_KEY_FRAGMENT,
         ("claude-code", "api_key") => CLAUDE_CODE_API_KEY_FRAGMENT,
         ("claude-code", "access_token") => CLAUDE_CODE_ACCESS_TOKEN_FRAGMENT,
         _ => return Ok(None),
@@ -382,6 +383,22 @@ transforms:
             proxy_value: META_AI_API_KEY
             match_headers: ["Authorization"]
           rules: [{ host: api.ai.meta.com }]
+"#;
+
+// Z.ai (GLM) for Pi's built-in `zai` provider, which reads ZAI_API_KEY and
+// sends it as a Bearer token. One host serves Z.ai's GLM Coding Plan
+// endpoints (`/api/coding/paas/v4`, `/api/anthropic`, `/api/v1`) as well as the
+// pay-as-you-go API, so the binding covers whichever key the operator stores.
+const ZAI_API_KEY_FRAGMENT: &str = r#"
+transforms:
+  - name: secrets
+    config:
+      secrets:
+        - id: ZAI_API_KEY_AUTHORIZATION
+          replace:
+            proxy_value: ZAI_API_KEY
+            match_headers: ["Authorization"]
+          rules: [{ host: api.z.ai }]
 "#;
 
 // The `openai-codex` broker credential this references is managed by

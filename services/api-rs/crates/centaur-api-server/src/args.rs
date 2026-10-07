@@ -2193,6 +2193,10 @@ impl IronProxyHarnessArgs {
         if let Some(fragment) = harness_auth_fragment("meta-ai", "api_key")? {
             fragments.push(fragment);
         }
+        // Z.ai GLM models for Pi's built-in `zai` provider (ZAI_API_KEY).
+        if let Some(fragment) = harness_auth_fragment("zai", "api_key")? {
+            fragments.push(fragment);
+        }
         if let Ok(raw) = env::var("CODEX_CUSTOM_PROVIDERS") {
             fragments.extend(custom_provider_auth_fragments(&raw)?);
         }
@@ -3049,6 +3053,10 @@ mod tests {
         assert!(
             env.iter()
                 .any(|(name, value)| name == "META_AI_API_KEY" && value == "META_AI_API_KEY")
+        );
+        assert!(
+            env.iter()
+                .any(|(name, value)| name == "ZAI_API_KEY" && value == "ZAI_API_KEY")
         );
         assert!(env.iter().all(|(name, _)| name != "NOUS_API_KEY"));
     }

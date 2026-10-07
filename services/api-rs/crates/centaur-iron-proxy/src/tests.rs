@@ -49,6 +49,22 @@ fn harness_auth_fragments_are_baked_in() {
         Some("META_AI_API_KEY")
     );
 
+    let zai = harness_auth_fragment("zai", "api_key").unwrap().unwrap();
+    assert_eq!(
+        zai.transforms[0].config.secrets[0].rules[0]["host"].as_str(),
+        Some("api.z.ai")
+    );
+    let zai_placeholders = placeholder_env(&[zai]);
+    assert_eq!(
+        zai_placeholders.get("ZAI_API_KEY").map(String::as_str),
+        Some("ZAI_API_KEY")
+    );
+    assert!(
+        harness_auth_fragment("zai", "access_token")
+            .unwrap()
+            .is_none()
+    );
+
     let claude_code = harness_auth_fragment("claude-code", "api_key")
         .unwrap()
         .unwrap();
