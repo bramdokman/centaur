@@ -1,4 +1,4 @@
-import { resolveAllowedAuthorAssociations } from "./authorization";
+import { isActorAllowed } from "./authorization";
 import { backgroundWaitUntil } from "./context";
 import { hasLabel, isBotLogin, labelNames } from "./identity";
 import { DEFAULT_ISSUE_PROMPT } from "./issue-prompt";
@@ -82,23 +82,31 @@ export function issueTrigger(
  * enforces. But issue templates / issue forms apply their `labels:` and
  * `assignees:` on creation for *any* author, and those deliveries name the
  * author as the sender. So when the sender is the issue's own author, apply the
- * same author-association gate as the comment path (OWNER/MEMBER/COLLABORATOR
- * by default); otherwise someone with triage access made the hand-off. Fails
- * closed when the sender is missing.
+ * same human trust gate as the comment path (isActorAllowed): the author
+ * association, then — because webhooks stamp private org members CONTRIBUTOR —
+ * the author's actual repository permission (triage or higher). An outside
+ * contributor's template-applied label is still refused. Otherwise someone with
+ * triage access made the hand-off. Fails closed when the sender is missing.
  */
-export function isIssueHandOffSenderAllowed(
+export async function isIssueHandOffSenderAllowed(
   payload: Record<string, unknown>,
-  options: Pick<GithubbotOptions, "allowedAuthorAssociations">,
-): boolean {
+  ctx: Pick<IssueManagerContext, "octokit" | "options">,
+): Promise<boolean> {
   const sender = stringValue(isRecord(payload.sender) ? payload.sender.login : undefined);
   if (!sender) return false;
   const issue = isRecord(payload.issue) ? payload.issue : {};
   const author = stringValue(isRecord(issue.user) ? issue.user.login : undefined);
   if (!author || author.toLowerCase() !== sender.toLowerCase()) return true;
-  const allowed = resolveAllowedAuthorAssociations(options.allowedAuthorAssociations);
-  if (allowed.includes("*")) return true;
-  const association = stringValue(issue.author_association)?.toUpperCase();
-  return !!association && allowed.includes(association);
+  const repo = repoFromPayload(payload);
+  return isActorAllowed(
+    {
+      association: stringValue(issue.author_association),
+      login: sender,
+      owner: repo?.owner,
+      repo: repo?.repo,
+    },
+    ctx,
+  );
 }
 
 /**
@@ -125,14 +133,6 @@ export function handleIssueEvent(
   const number = numberValue(issue.number);
   if (number === undefined) return null;
   if (stringValue(issue.state) !== "open") return null;
-  if (!isIssueHandOffSenderAllowed(payload, ctx.options)) {
-    traceLog(ctx.options, "githubbot_issue_trigger_unauthorized_skipped", undefined, {
-      issue: `${repo.owner}/${repo.repo}#${number}`,
-      trigger,
-      association: stringValue(issue.author_association) ?? "unknown",
-    });
-    return null;
-  }
 
   const { options, state } = ctx;
   const title = stringValue(issue.title) ?? `#${number}`;
@@ -154,6 +154,14 @@ export function handleIssueEvent(
 
   return (async () => {
     const logger = options.logger ?? noopLogger;
+    if (!(await isIssueHandOffSenderAllowed(payload, ctx))) {
+      traceLog(options, "githubbot_issue_trigger_unauthorized_skipped", undefined, {
+        issue: `${repo.owner}/${repo.repo}#${number}`,
+        trigger,
+        association: stringValue(issue.author_association) ?? "unknown",
+      });
+      return;
+    }
     // Claim the delivery before the background run so a redelivery never
     // double-works. State-keyed (not Chat-thread-keyed) because the work thread
     // is synthetic and never touches the adapter.

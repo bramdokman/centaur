@@ -141,16 +141,32 @@ describe("handleBodyMention", () => {
     ).toBeNull();
   });
 
-  test("ignores an unauthorized author", () => {
+  test("ignores an unauthorized author", async () => {
     const spies = { reactions: 0, comments: 0 };
-    expect(
-      handleBodyMention(
-        makeCtx(spies),
-        "pull_request",
-        openedPr("@centaur-bot do it", "NONE"),
-      ),
-    ).toBeNull();
+    await handleBodyMention(
+      makeCtx(spies),
+      "pull_request",
+      openedPr("@centaur-bot do it", "NONE"),
+    );
+    expect(spies.reactions).toBe(0);
     expect(spies.comments).toBe(0);
+  });
+
+  test("a CONTRIBUTOR-stamped author with write access is allowed", async () => {
+    const spies = { reactions: 0, comments: 0 };
+    const ctx = makeCtx(spies);
+    (ctx.octokit.rest as unknown as { repos: unknown }).repos = {
+      getCollaboratorPermissionLevel: async () => ({
+        data: { permission: "write", role_name: "write" },
+      }),
+    };
+    await handleBodyMention(
+      ctx,
+      "pull_request",
+      openedPr("@centaur-bot do it", "CONTRIBUTOR", "private-member"),
+    );
+    expect(spies.reactions).toBeGreaterThan(0);
+    expect(spies.comments).toBe(1);
   });
 
   test("runs a turn and replies once for an authorized mention; dedups redelivery", async () => {

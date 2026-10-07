@@ -11,10 +11,7 @@ import {
 } from "chat";
 import { Hono, type Context } from "hono";
 import pg from "pg";
-import {
-  authorAssociationFromRaw,
-  isCommentAuthorAllowed,
-} from "./authorization";
+import { authorAssociationFromRaw, isActorAllowed } from "./authorization";
 import { handleBodyMention } from "./body-mention";
 import { backgroundWaitUntil, requestContext, waitUntil } from "./context";
 import { botMentionName, isBotLogin } from "./identity";
@@ -271,8 +268,21 @@ async function handleMessage(
   // Only sufficiently-trusted authors may drive a turn: the agent runs in a
   // write-capable sandbox and posts its transcript back, so an untrusted
   // commenter must not be able to steer it (or read its tool output). Gates both
-  // mentions (execute) and follow-up context (append). Fails closed.
-  if (!isCommentAuthorAllowed(message.raw, options)) {
+  // mentions (execute) and follow-up context (append). The comment's
+  // author_association decides first; when it isn't allowed (webhooks can stamp
+  // private org members CONTRIBUTOR), the author's repository permission
+  // (triage or higher) does. Fails closed.
+  const threadRef = parseGithubThreadKey(thread.id);
+  const authorAllowed = await isActorAllowed(
+    {
+      association: authorAssociationFromRaw(message.raw),
+      login: message.author.userName,
+      owner: threadRef?.owner,
+      repo: threadRef?.repo,
+    },
+    { octokit: input.prManagerCtx.octokit, options },
+  );
+  if (!authorAllowed) {
     traceLog(options, "githubbot_unauthorized_author_skipped", undefined, {
       association: authorAssociationFromRaw(message.raw) ?? "unknown",
       message_id: message.id,

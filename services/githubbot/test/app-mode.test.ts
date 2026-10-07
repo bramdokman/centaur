@@ -37,6 +37,11 @@ beforeAll(() => {
           { status: 201 },
         );
       }
+      const perm = /^\/repos\/acme\/widgets\/collaborators\/([^/]+)\/permission$/.exec(path);
+      if (perm) {
+        const role = perm[1] === "private-admin" ? "admin" : "read";
+        return Response.json({ permission: role, role_name: role, user: { login: perm[1] } });
+      }
       return Response.json({ id: 1 }, { status: 201 });
     },
   });
@@ -83,6 +88,7 @@ function commentWebhook(input: {
   userId: number;
   type?: string;
   commentId: number;
+  association?: string;
 }): Request {
   const payload = JSON.stringify({
     action: "created",
@@ -91,7 +97,7 @@ function commentWebhook(input: {
       body: input.body,
       user: { id: input.userId, login: input.login, type: input.type ?? "User" },
       // Allowed association even for the bot, so only the loop guard can stop it.
-      author_association: "OWNER",
+      author_association: input.association ?? "OWNER",
       created_at: "2026-10-07T10:00:00Z",
       updated_at: "2026-10-07T10:00:00Z",
       html_url: "https://github.com/acme/widgets/issues/3#issuecomment-1",
@@ -166,6 +172,39 @@ describe("GitHub App mode", () => {
       }),
     );
     await settle(() => apiCalls.length > 0, 500);
+    expect(apiCalls).toEqual([]);
+  });
+
+  test("a CONTRIBUTOR-stamped private org admin is allowed by repo permission", async () => {
+    const { apiCalls, bot } = makeBot();
+    await bot.app.fetch(
+      commentWebhook({
+        body: "@my-app please fix",
+        login: "private-admin",
+        userId: 1002,
+        commentId: 14,
+        association: "CONTRIBUTOR",
+      }),
+    );
+    await settle(() => apiCalls.length > 0);
+    expect(githubCalls).toContain("GET /repos/acme/widgets/collaborators/private-admin/permission");
+    expect(apiCalls.some((url) => url.includes("/api/session/"))).toBe(true);
+  });
+
+  test("a CONTRIBUTOR with read access only is still refused", async () => {
+    const { apiCalls, bot } = makeBot();
+    await bot.app.fetch(
+      commentWebhook({
+        body: "@my-app please fix",
+        login: "outsider",
+        userId: 1003,
+        commentId: 15,
+        association: "CONTRIBUTOR",
+      }),
+    );
+    await settle(() => githubCalls.some((c) => c.includes("/outsider/permission")), 1_000);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(githubCalls).toContain("GET /repos/acme/widgets/collaborators/outsider/permission");
     expect(apiCalls).toEqual([]);
   });
 });

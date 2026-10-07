@@ -1625,7 +1625,10 @@ describe("agent-login reviews (self-review noise)", () => {
       },
     });
 
-  function agentCtx(comments: { in_reply_to_id?: number }[]) {
+  function agentCtx(
+    comments: { in_reply_to_id?: number }[],
+    permissions: Record<string, string> = {},
+  ) {
     const reactions: string[] = [];
     const ctx = {
       octokit: {
@@ -1637,6 +1640,13 @@ describe("agent-login reviews (self-review noise)", () => {
           pulls: {
             get: async () => ({ data: prPayload({ headRepoFullName: "base/repo" }) }),
             listCommentsForReview: async () => ({ data: comments }),
+          },
+          repos: {
+            getCollaboratorPermissionLevel: async (input: { username: string }) => {
+              const role = permissions[input.username];
+              if (!role) throw new Error("404 not a collaborator");
+              return { data: { permission: role, role_name: role } };
+            },
           },
         },
       },

@@ -25,8 +25,13 @@ reviewer** like any other collaborator.
   whose GitHub `author_association` is allowed (default `OWNER` / `MEMBER` / `COLLABORATOR`) can drive
   a turn — the agent runs in a write-capable sandbox and posts its transcript back, so untrusted
   commenters can't steer it. Widen or open it with `GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS` (`*` allows
-  everyone, e.g. a fully-private repo). Lifecycle triggers (assignment, review-request) are already
-  gated by GitHub permissions, so this applies only to the comment path.
+  everyone, e.g. a fully-private repo). GitHub's webhooks often stamp *private* org members
+  `CONTRIBUTOR` (or `NONE`), even org admins, so when the association isn't allowed githubbot falls
+  back to the author's actual repository permission
+  (`GET /repos/{owner}/{repo}/collaborators/{login}/permission`, cached in memory 10 min / 1 min when
+  denied) and allows `triage`, `write`, `maintain` or `admin`. A failed lookup denies. Lifecycle
+  triggers (assignment, review-request) are already gated by GitHub permissions, so this applies only
+  to the comment path, body mentions, and self-made issue hand-offs (below).
 - **`@`-mentioning the bot in the body of a newly-opened issue or PR** (the description, not a
   comment) → the same conversational turn runs, keyed to that issue/PR thread, with the reply posted
   as a comment. Only the `opened` event is handled — an edit that adds a mention later won't
@@ -60,7 +65,8 @@ reviewer** like any other collaborator.
   a trigger label set, the agent is told to put that label on the PR it opens, which hands the PR to PR
   self-management. Issue templates/forms apply their `labels:`/`assignees:` for any author, so when the
   account making the hand-off is the issue's own author, that author must pass the comment path's
-  author-association gate (`GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS`); a hand-off by anyone else needs
+  author-association gate (`GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS`, with the same repository-permission
+  fallback, so an outside contributor with read access is refused); a hand-off by anyone else needs
   triage access, which GitHub enforces. Note that a workflow which labels issues from untrusted authors
   (e.g. an auto-labeler) acts with triage access, so don't let one apply the trigger label.
 - **Per-turn context**: every turn prepends a compact header naming the PR/issue so a recycled
@@ -203,7 +209,7 @@ requests**, **Pull request reviews**, **Check runs**, **Check suites**, and **Wo
 | `GITHUBBOT_ISSUE_PROMPT_FILE` | — | Path to a file holding the issue-work methodology (e.g. an overlay-mounted file). Used when the inline var is unset. |
 | `GITHUBBOT_MANAGEMENT_PROMPT` | — | Extra guidance prepended to owned-PR management turns (CI-fix / conflict / address-review), inline. The per-action preamble still rides underneath. |
 | `GITHUBBOT_MANAGEMENT_PROMPT_FILE` | — | Path to a file holding the management guidance (e.g. an overlay-mounted file). Used when the inline var is unset. |
-| `GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS` | — | Comma-separated `author_association` values allowed to drive the comment path. Default `OWNER,MEMBER,COLLABORATOR`; `*` allows everyone. |
+| `GITHUBBOT_ALLOWED_AUTHOR_ASSOCIATIONS` | — | Comma-separated `author_association` values allowed to drive the comment path. Default `OWNER,MEMBER,COLLABORATOR`; `*` allows everyone. Anyone else with triage access or more on the repo is also allowed (permission lookup). |
 | `GITHUB_API_URL` | — | Override the GitHub REST base URL (GitHub Enterprise). |
 | `GITHUBBOT_USER_ID` | — | Bot's numeric user id for self-message detection (auto-detected otherwise). |
 | `GITHUBBOT_STATE_KEY_PREFIX` | — | Chat-SDK state key prefix, default `centaur-githubbot`. |

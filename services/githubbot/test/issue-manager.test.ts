@@ -300,16 +300,52 @@ describe("isIssueOwnedByBot", () => {
 describe("isIssueHandOffSenderAllowed", () => {
   const parse = (body: string) => JSON.parse(body) as Record<string, unknown>;
 
-  test("a triager labelling someone else's issue is allowed", () => {
+  /** A ctx whose permission lookup answers `roles[login]` (else 404). */
+  function permCtx(
+    roles: Record<string, string>,
+    options: Record<string, unknown> = {},
+  ) {
+    const lookups: string[] = [];
+    const ctx = {
+      octokit: {
+        rest: {
+          repos: {
+            getCollaboratorPermissionLevel: async (req: {
+              owner: string;
+              repo: string;
+              username: string;
+            }) => {
+              lookups.push(`${req.owner}/${req.repo}:${req.username}`);
+              const role = roles[req.username];
+              if (!role) throw Object.assign(new Error("Not Found"), { status: 404 });
+              return {
+                data: {
+                  permission: role === "triage" ? "read" : role,
+                  role_name: role,
+                  user: { login: req.username },
+                },
+              };
+            },
+          },
+        },
+      },
+      options,
+    } as unknown as Pick<PrManagerContext, "octokit" | "options">;
+    return { ctx, lookups };
+  }
+
+  test("a triager labelling someone else's issue is allowed", async () => {
+    const { ctx, lookups } = permCtx({});
     expect(
-      isIssueHandOffSenderAllowed(
+      await isIssueHandOffSenderAllowed(
         parse(issuesEvent({ action: "labeled", label: "centaur", author: "outsider" })),
-        {},
+        ctx,
       ),
     ).toBe(true);
+    expect(lookups).toEqual([]);
   });
 
-  test("an untrusted author whose issue template applied the label is refused", () => {
+  test("an untrusted author whose issue template applied the label is refused", async () => {
     const body = parse(
       issuesEvent({
         action: "labeled",
@@ -319,15 +355,23 @@ describe("isIssueHandOffSenderAllowed", () => {
         association: "NONE",
       }),
     );
-    expect(isIssueHandOffSenderAllowed(body, {})).toBe(false);
-    expect(isIssueHandOffSenderAllowed(body, { allowedAuthorAssociations: ["*"] })).toBe(
-      true,
-    );
+    // No repo access at all (404) and read-only access are both refused.
+    expect(await isIssueHandOffSenderAllowed(body, permCtx({}).ctx)).toBe(false);
+    expect(
+      await isIssueHandOffSenderAllowed(body, permCtx({ Outsider: "read" }).ctx),
+    ).toBe(false);
+    expect(
+      await isIssueHandOffSenderAllowed(
+        body,
+        permCtx({}, { allowedAuthorAssociations: ["*"] }).ctx,
+      ),
+    ).toBe(true);
   });
 
-  test("a trusted author labelling their own issue is allowed", () => {
+  test("a trusted author labelling their own issue is allowed without a lookup", async () => {
+    const { ctx, lookups } = permCtx({});
     expect(
-      isIssueHandOffSenderAllowed(
+      await isIssueHandOffSenderAllowed(
         parse(
           issuesEvent({
             action: "labeled",
@@ -337,25 +381,99 @@ describe("isIssueHandOffSenderAllowed", () => {
             association: "OWNER",
           }),
         ),
-        {},
+        ctx,
       ),
     ).toBe(true);
+    expect(lookups).toEqual([]);
   });
 
-  test("handleIssueEvent skips a template-applied label from an untrusted author", () => {
-    const { ctx } = issueCtx({ triggerLabel: "centaur" });
-    expect(
-      handleIssueEvent(
-        ctx,
+  test("a private org member stamped CONTRIBUTOR is allowed by repo permission (cached)", async () => {
+    const { ctx, lookups } = permCtx({ orgadmin: "admin" });
+    const body = parse(
+      issuesEvent({
+        action: "labeled",
+        label: "centaur",
+        author: "orgadmin",
+        sender: "orgadmin",
+        association: "CONTRIBUTOR",
+      }),
+    );
+    expect(await isIssueHandOffSenderAllowed(body, ctx)).toBe(true);
+    expect(await isIssueHandOffSenderAllowed(body, ctx)).toBe(true);
+    expect(lookups).toEqual(["acme/widgets:orgadmin"]);
+  });
+
+  test("triage, write and maintain roles count; a failed lookup denies", async () => {
+    for (const role of ["triage", "write", "maintain"]) {
+      const body = parse(
         issuesEvent({
           action: "labeled",
           label: "centaur",
-          author: "outsider",
-          sender: "outsider",
-          association: "FIRST_TIME_CONTRIBUTOR",
+          author: "dev",
+          sender: "dev",
+          association: "CONTRIBUTOR",
         }),
-        "d1",
+      );
+      expect(await isIssueHandOffSenderAllowed(body, permCtx({ dev: role }).ctx)).toBe(true);
+    }
+    const noLookup = { octokit: { rest: { repos: {} } }, options: {} } as unknown as Pick<
+      PrManagerContext,
+      "octokit" | "options"
+    >;
+    expect(
+      await isIssueHandOffSenderAllowed(
+        parse(
+          issuesEvent({
+            action: "labeled",
+            label: "centaur",
+            author: "dev",
+            sender: "dev",
+            association: "CONTRIBUTOR",
+          }),
+        ),
+        noLookup,
       ),
-    ).toBeNull();
+    ).toBe(false);
+  });
+
+  test("handleIssueEvent skips a template-applied label from an untrusted author", async () => {
+    const { ctx, executes, reactions } = issueCtx({ triggerLabel: "centaur" });
+    await handleIssueEvent(
+      ctx,
+      issuesEvent({
+        action: "labeled",
+        label: "centaur",
+        author: "outsider",
+        sender: "outsider",
+        association: "FIRST_TIME_CONTRIBUTOR",
+      }),
+      "d1",
+    );
+    await drainBackgroundWork(2_000);
+    expect(reactions).toEqual([]);
+    expect(executes).toEqual([]);
+  });
+
+  test("handleIssueEvent works a self-labelled issue of a CONTRIBUTOR-stamped admin", async () => {
+    const { ctx, executes, reactions } = issueCtx({ triggerLabel: "centaur" });
+    (ctx.octokit.rest as unknown as { repos: unknown }).repos = {
+      getCollaboratorPermissionLevel: async () => ({
+        data: { permission: "admin", role_name: "admin" },
+      }),
+    };
+    await handleIssueEvent(
+      ctx,
+      issuesEvent({
+        action: "labeled",
+        label: "centaur",
+        author: "orgadmin",
+        sender: "orgadmin",
+        association: "CONTRIBUTOR",
+      }),
+      "d1",
+    );
+    await drainBackgroundWork(2_000);
+    expect(reactions[0]).toBe("eyes");
+    expect(executes.length).toBeGreaterThan(0);
   });
 });
